@@ -1,0 +1,8 @@
+[submodule "vendor/xananode-hugo"]
+	path = vendor/xananode-hugo
+	url = https://github.com/kingc95/XanaNode-Hugo.git
+	branch = main
+[submodule "vendor/xananode-workspace-repo"]
+	path = vendor/xananode-workspace-repo
+	url = https://github.com/kingc95/XanaNode-Workspace.git
+	branch = main

@@ -1,0 +1,29 @@
+{
+  "name": "@xananode/studio",
+  "version": "0.1.0",
+  "description": "Local-first desktop studio for authoring XanaNode knowledge substrates.",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "electron": "latest",
+    "concurrently": "latest",
+    "wait-on": "latest",
+    "cross-env": "latest",
+    "@xananode/workspace": "file:./vendor/xananode-workspace-repo"
+  },
+  "devDependencies": {},
+  "keywords": ["xananode", "studio", "knowledge-substrate", "local-first", "electron"],
+  "license": "MIT"
+}
