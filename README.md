@@ -2,19 +2,21 @@
 
 Local-first desktop studio for authoring XanaNode knowledge substrates.
 
-This is the first usable scaffold for the real Studio app. It is intentionally built as a modular desktop shell around `@xananode/workspace`, which itself sits on `@xananode/core`.
+This is the first usable scaffold for the real Studio app. It is intentionally built as a modular desktop shell around `@xananode/workspace`, which itself sits on `@xananode/core`. Studio also embeds the Hugo renderer so the editing preview matches the published site.
 
 ## Current stack
 
 ```text
 XanaNode Protocol
-  ↓
+  |
 @xananode/core
-  ↓
+  |
 @xananode/workspace
-  ↓
+  |
 XanaNode Studio
 ```
+
+Hugo also depends on Core directly. That is intentional: people who use the Hugo theme without Studio still get the same protocol validation path.
 
 ## What this first version includes
 
@@ -33,11 +35,12 @@ XanaNode Studio
 - Run validation/health checks
 - Save Git snapshots using friendlier language
 - Start/stop local Hugo preview and embed it in the center panel
-- Git submodule dependency on `XanaNode-Workspace`
+- Git submodule dependencies on `XanaNode-Workspace` and `XanaNode-Hugo`
 
 ## Install
 
 ```bash
+git submodule update --init --recursive
 npm install
 ```
 
@@ -75,15 +78,14 @@ This is also not trying to make Git visible to normal users. Git is used underne
 
 ## Next implementation steps
 
-1. Replace prompt-based new-node flow with a proper modal.
-2. Add a real front matter editor that preserves unknown fields.
-3. Add relationship schema registry autocomplete from `@xananode/core`.
-4. Add author profile setup wizard.
-5. Add Git history and visual diff UI.
-6. Add import manager for federated substrates.
-7. Add media preview and source extraction.
-8. Add AI/co-pilot integration as an optional provider interface.
-9. Add native packaging through Electron Forge or Tauri alternative.
+1. Add a real front matter editor that preserves unknown fields.
+2. Add relationship schema registry autocomplete from `@xananode/core`.
+3. Add author profile setup wizard.
+4. Add Git history and visual diff UI.
+5. Add import manager for federated substrates.
+6. Add media preview and source extraction.
+7. Add AI/co-pilot integration as an optional provider interface.
+8. Add native packaging through Electron Forge or Tauri alternative.
 
 ## Dependency Wiring
 
@@ -94,15 +96,19 @@ vendor/xananode-hugo
 vendor/xananode-workspace-repo
 ```
 
-Workspace then carries Core SDK as its own submodule, and Core SDK carries the protocol repo as its own submodule:
+Hugo and Workspace both carry Core SDK as their own submodule, and Core SDK carries the protocol repo as its own submodule:
 
 ```text
 XanaNode-Studio
   vendor/xananode-hugo -> XanaNode-Hugo
+    vendor/xananode-core -> XanaNode-Core-SDK
+      vendor/xananode-protocol -> XanaNode
   vendor/xananode-workspace-repo -> XanaNode-Workspace
     vendor/xananode-core -> XanaNode-Core-SDK
-      vendor/xananode-protocol -> xananode
+      vendor/xananode-protocol -> XanaNode
 ```
+
+Hugo carries Core directly because Hugo must work for people who never open Studio. Workspace carries Core because it owns local substrate management, build orchestration, and health workflows. Both Core submodule pointers should track the same upstream Core SDK line.
 
 After cloning, initialize everything with:
 
@@ -116,3 +122,5 @@ The package dependency is:
 ```json
 "@xananode/workspace": "file:./vendor/xananode-workspace-repo"
 ```
+
+Studio invokes the Hugo renderer from `vendor/xananode-hugo` when available. The preview process prepares Hugo artifacts first and falls back to Core build output only if the Hugo prepare step fails.
