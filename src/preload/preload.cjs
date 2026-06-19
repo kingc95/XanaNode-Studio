@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("xananode", {
   importAssets: () => ipcRenderer.invoke("workspace:importAssets"),
   saveSnapshot: (payload) => ipcRenderer.invoke("workspace:saveSnapshot", payload),
   build: () => ipcRenderer.invoke("workspace:build"),
+  exportPack: () => ipcRenderer.invoke("workspace:exportPack"),
   validate: () => ipcRenderer.invoke("workspace:validate"),
   openInShell: (targetPath) => ipcRenderer.invoke("workspace:openInShell", targetPath),
   startHugoPreview: () => ipcRenderer.invoke("preview:startHugo"),

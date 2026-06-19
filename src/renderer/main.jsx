@@ -29,6 +29,9 @@ function App() {
   const [centerMode, setCenterMode] = useState("graph");
   const [catalogMode, setCatalogMode] = useState("type");
   const [appMetadata, setAppMetadata] = useState(buildMetadata);
+  const [projectionLayout, setProjectionLayout] = useState("single");
+  const [projectionSplit, setProjectionSplit] = useState(55);
+  const [relationshipLinkMode, setRelationshipLinkMode] = useState(null);
   const api = window.xananode || createUnavailableApi();
   const previewFrameRef = useRef(null);
   const lastPreviewNodeRef = useRef("");
@@ -205,27 +208,77 @@ function App() {
     await run(
       () => api.createNode({
         node: {
-          title: "Typed Relationships Preserve Context",
-          type: "claim",
-          summary: "A claim node seeded so Studio has something to edit and validate.",
-          relationships: [{ type: "supports", target: "xananode-studio" }]
+          id: "how-to-make-a-campfire",
+          title: "How do you make a campfire?",
+          type: "question",
+          subtype: "how_to",
+          summary: "A practical question node for learning how inquiries, claims, sources, and steps connect.",
+          relationships: [
+            { type: "raises", target: "campfire-safety-gap" },
+            { type: "requires_information", target: "campfire-safety-gap" }
+          ]
         },
-        body: "# Typed Relationships Preserve Context\n\nThis starter claim is here so you can test editing, relationships, health, build, and preview without creating content first.\n"
+        body: "# How do you make a campfire?\n\nA useful substrate can begin with an ordinary question. From here, Studio can connect the question to an answer, a safety gap, sources, tools, places, and claims that explain what matters.\n"
       }),
-      "Seeded trial claim"
+      "Seeded campfire question"
     );
     await run(
       () => api.createNode({
         node: {
-          id: "xananode-studio",
-          title: "XanaNode Studio",
-          type: "project",
-          summary: "A local-first workbench for authoring XanaNode substrates.",
-          relationships: []
+          id: "campfire-basic-answer",
+          title: "A small fire starts with tinder, kindling, fuel, airflow, and a safe place.",
+          type: "response",
+          subtype: "answer",
+          summary: "Build a safe fire lay, light tinder, add kindling, then feed larger fuel slowly.",
+          relationships: [
+            { type: "answers", target: "how-to-make-a-campfire" },
+            { type: "requires", target: "campfire-safe-location" },
+            { type: "requires", target: "dry-tinder-and-kindling" }
+          ]
         },
-        body: "# XanaNode Studio\n\nUse this seeded project node to test the catalog, editor, preview, and snapshot workflow.\n"
+        body: "# A small fire starts with tinder, kindling, fuel, airflow, and a safe place.\n\nClear the area, keep water nearby, make a small tinder bundle, add kindling loosely enough for air to move, and only add larger fuel after the flame is stable.\n"
       }),
-      "Seeded trial project"
+      "Seeded campfire answer"
+    );
+    await run(
+      () => api.createNode({
+        node: {
+          id: "campfire-safe-location",
+          title: "A campfire needs a safe location.",
+          type: "claim",
+          summary: "The fire site should be legal, clear of hazards, sheltered from spreading, and easy to extinguish.",
+          relationships: [{ type: "supports", target: "campfire-basic-answer" }]
+        },
+        body: "# A campfire needs a safe location.\n\nA fire is not just a flame. It is a relationship between weather, ground, fuel, people, and responsibility.\n"
+      }),
+      "Seeded safety claim"
+    );
+    await run(
+      () => api.createNode({
+        node: {
+          id: "dry-tinder-and-kindling",
+          title: "Dry tinder and kindling make ignition possible.",
+          type: "claim",
+          summary: "Small, dry material catches first and gives larger fuel time to heat.",
+          relationships: [{ type: "supports", target: "campfire-basic-answer" }]
+        },
+        body: "# Dry tinder and kindling make ignition possible.\n\nThe first useful fact is scale: small dry fibers catch, pencil-thin sticks sustain, and larger wood comes later.\n"
+      }),
+      "Seeded ignition claim"
+    );
+    await run(
+      () => api.createNode({
+        node: {
+          id: "campfire-safety-gap",
+          title: "What rules and fire conditions apply here?",
+          type: "knowledge_gap",
+          subtype: "safety",
+          summary: "The answer changes by place, season, weather, and local law.",
+          relationships: [{ type: "context_for", target: "how-to-make-a-campfire" }]
+        },
+        body: "# What rules and fire conditions apply here?\n\nA complete answer needs local fire restrictions, current wind, drought conditions, and whether open flames are allowed.\n"
+      }),
+      "Seeded safety gap"
     );
     const refreshed = await run(() => api.refreshWorkspace(), "Trial workspace ready");
     if (refreshed?.workspace) {
@@ -298,6 +351,37 @@ function App() {
     setDraft({ ...draft, frontMatter: { ...frontMatter, relationships } });
   }
 
+  function startRelationshipLink(type) {
+    setRelationshipLinkMode({ type, source: null });
+    setProjectionLayout("single");
+    setCenterMode("graph");
+    setNotice({ type: "success", text: `Choose the source node, then the target node for ${relationshipLabel(type)}.` });
+  }
+
+  function handleGraphNodeClick(node) {
+    if (!relationshipLinkMode) {
+      selectNode(node);
+      return;
+    }
+    if (!relationshipLinkMode.source) {
+      setRelationshipLinkMode({ ...relationshipLinkMode, source: node });
+      setSelectedNode(node);
+      setDraft(makeDraft(node));
+      setNotice({ type: "success", text: `Source set to ${node.title || node.id}. Now choose the target.` });
+      return;
+    }
+    const source = relationshipLinkMode.source;
+    const targetRef = node.id || node.slug || node.title;
+    const sourceDraft = makeDraft(source);
+    const frontMatter = sourceDraft.frontMatter || extractFrontMatterShape(sourceDraft);
+    const relationships = Array.isArray(frontMatter.relationships) ? [...frontMatter.relationships] : [];
+    relationships.push({ type: relationshipLinkMode.type, target: targetRef, summary: "" });
+    setSelectedNode(source);
+    setDraft({ ...sourceDraft, frontMatter: { ...frontMatter, relationships } });
+    setRelationshipLinkMode(null);
+    setNotice({ type: "success", text: `Added ${relationshipLabel(relationshipLinkMode.type)} to the draft. Save the source node when it looks right.` });
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -314,6 +398,7 @@ function App() {
           <button onClick={openWorkspace}>Open</button>
           <button disabled={!workspace} onClick={refreshStatus}>Health</button>
           <button disabled={!workspace} onClick={() => run(() => api.build(), "Built artifacts")}>Build</button>
+          <button disabled={!workspace} onClick={() => run(() => api.exportPack(), "Exported pack")}>Export Pack</button>
           <button disabled={!workspace} onClick={startPreview}>Preview</button>
           <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
         </div>
@@ -344,6 +429,11 @@ function App() {
               <div className="panel-title">Workspace</div>
               <div className="small muted">{workspace.rootDir}</div>
               <div className="manifest-name">{workspace.manifest?.name || workspace.manifest?.id || "Unnamed substrate"}</div>
+              {isCanonicalWorkspace(workspace) && (
+                <div className="canon-warning">
+                  You are viewing canonical XanaNode material. Explore freely; edits here become your own proposal until they are accepted back into the canon.
+                </div>
+              )}
               <div className="pill-row">
                 <span className="pill">{nodes.length} nodes</span>
                 <span className="pill">{workspace.imports?.imports?.length || workspace.imports?.length || 0} imports</span>
@@ -384,14 +474,27 @@ function App() {
             </section>
           </aside>
           <section className="center-panel">
-            <div className="center-tabs">
-              <button className={centerMode === "graph" ? "active" : ""} onClick={() => setCenterMode("graph")}>Graph</button>
-              <button className={centerMode === "preview" ? "active" : ""} onClick={() => setCenterMode("preview")}>Hugo Projection</button>
-              <button className={centerMode === "health" ? "active" : ""} onClick={() => setCenterMode("health")}>Health</button>
-              <button className={centerMode === "logs" ? "active" : ""} onClick={() => setCenterMode("logs")}>Logs</button>
-            </div>
-            {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={selectNode} />}
-            {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} />}
+            <ProjectionToolbar
+              centerMode={centerMode}
+              setCenterMode={setCenterMode}
+              projectionLayout={projectionLayout}
+              setProjectionLayout={setProjectionLayout}
+              projectionSplit={projectionSplit}
+              setProjectionSplit={setProjectionSplit}
+              relationshipLinkMode={relationshipLinkMode}
+              onCancelLink={() => setRelationshipLinkMode(null)}
+            />
+            {projectionLayout === "split" && centerMode !== "health" && centerMode !== "logs" ? (
+              <div className="projection-split" style={{ gridTemplateColumns: `${projectionSplit}% minmax(280px, 1fr)` }}>
+                <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} />
+                <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} compact />
+              </div>
+            ) : (
+              <>
+                {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} />}
+                {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} />}
+              </>
+            )}
             {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} />}
             {centerMode === "logs" && <LogView logs={previewLogs} />}
           </section>
@@ -403,6 +506,7 @@ function App() {
               nodes={nodes}
               suggestions={suggestions}
               addRelationship={addRelationship}
+              startRelationshipLink={startRelationshipLink}
               saveNode={saveNode}
             />
           </aside>
@@ -508,7 +612,57 @@ function SnapshotDialog({ defaultMessage, onSave, onClose }) {
   );
 }
 
-function GraphView({ nodes, selectedNode, draft, onSelect }) {
+function ProjectionToolbar({
+  centerMode,
+  setCenterMode,
+  projectionLayout,
+  setProjectionLayout,
+  projectionSplit,
+  setProjectionSplit,
+  relationshipLinkMode,
+  onCancelLink
+}) {
+  return (
+    <div className="center-tabs projection-toolbar">
+      <div className="tab-group">
+        <button className={centerMode === "graph" && projectionLayout !== "split" ? "active" : ""} onClick={() => {
+          setProjectionLayout("single");
+          setCenterMode("graph");
+        }}>Graph Projection</button>
+        <button className={centerMode === "preview" && projectionLayout !== "split" ? "active" : ""} onClick={() => {
+          setProjectionLayout("single");
+          setCenterMode("preview");
+        }}>Hugo Projection</button>
+        <button className={projectionLayout === "split" ? "active" : ""} onClick={() => {
+          setProjectionLayout("split");
+          setCenterMode("graph");
+        }}>Both</button>
+        <button className={centerMode === "health" ? "active" : ""} onClick={() => {
+          setProjectionLayout("single");
+          setCenterMode("health");
+        }}>Health</button>
+        <button className={centerMode === "logs" ? "active" : ""} onClick={() => {
+          setProjectionLayout("single");
+          setCenterMode("logs");
+        }}>Logs</button>
+      </div>
+      {projectionLayout === "split" && (
+        <label className="split-control">
+          <span>Graph size</span>
+          <input type="range" min="35" max="75" value={projectionSplit} onChange={(event) => setProjectionSplit(Number(event.target.value))} />
+        </label>
+      )}
+      {relationshipLinkMode && (
+        <div className="link-mode-banner">
+          <span>{relationshipLinkMode.source ? "Choose target" : "Choose source"} for {relationshipLabel(relationshipLinkMode.type)}</span>
+          <button onClick={onCancelLink}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
   const current = draft || selectedNode || nodes[0] || null;
   const graph = useMemo(() => buildLocalGraph(nodes, current), [nodes, current]);
 
@@ -522,7 +676,12 @@ function GraphView({ nodes, selectedNode, draft, onSelect }) {
   }
 
   return (
-    <div className="graph-wrap">
+    <div className={`graph-wrap ${linkMode ? "linking" : ""}`}>
+      {linkMode && (
+        <div className="graph-instruction">
+          {linkMode.source ? `Target for ${linkMode.source.title || linkMode.source.id}` : "Click the source node for this relationship."}
+        </div>
+      )}
       <svg className="graph-svg" viewBox="0 0 900 620" role="img" aria-label="Workspace substrate graph">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -564,7 +723,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect }) {
   );
 }
 
-function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs }) {
+function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs, compact = false }) {
   if (!previewUrl) {
     return (
       <div className="empty-panel">
@@ -575,12 +734,12 @@ function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs })
     );
   }
   return (
-    <div className="preview-shell">
+    <div className={`preview-shell ${compact ? "compact" : ""}`}>
       <iframe ref={iframeRef} className="preview-frame" src={previewUrl} title="XanaNode Hugo Preview" onLoad={onFrameLoad} />
-      <div className="preview-debug">
+      {!compact && <div className="preview-debug">
         <div className="panel-title">Preview Logs</div>
         <pre className="preview-log-stream">{logs.length ? logs.join("") : "Waiting for preview activity..."}</pre>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -621,10 +780,33 @@ function LogView({ logs }) {
   return <pre className="log-view">{logs.length ? logs.join("") : "No preview logs yet."}</pre>;
 }
 
-function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, saveNode }) {
+function HelpHint({ title, children, href }) {
+  return (
+    <details className="help-hint">
+      <summary aria-label={`Help: ${title}`}>?</summary>
+      <div className="help-popover">
+        <strong>{title}</strong>
+        <p>{children}</p>
+        {href && <a href={href} target="_blank" rel="noreferrer">Open canonical node</a>}
+      </div>
+    </details>
+  );
+}
+
+function FieldLabel({ children, helpTitle, help, href }) {
+  return (
+    <label className="field-label">
+      <span>{children}</span>
+      {help && <HelpHint title={helpTitle || children} href={href}>{help}</HelpHint>}
+    </label>
+  );
+}
+
+function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, startRelationshipLink, saveNode }) {
   const [relationshipType, setRelationshipType] = useState("related_to");
   const [relationshipCategory, setRelationshipCategory] = useState("all");
   const [relationshipTarget, setRelationshipTarget] = useState("");
+  const [relationshipQuery, setRelationshipQuery] = useState("");
 
   if (!draft) {
     return (
@@ -643,6 +825,13 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
   const filteredRelationshipDefinitions = relationshipCategory === "all"
     ? RELATIONSHIP_TYPE_DEFINITIONS
     : RELATIONSHIP_TYPE_DEFINITIONS.filter((definition) => definition.category === relationshipCategory);
+  const searchedRelationshipDefinitions = filteredRelationshipDefinitions.filter((definition) => {
+    const query = relationshipQuery.trim().toLowerCase();
+    if (!query) return true;
+    return [definition.label, definition.type, definition.category, definition.meaning, definition.inverse]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
   const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
 
   function updateFrontMatter(key, value) {
@@ -663,10 +852,10 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
         <button className="primary" onClick={saveNode}>Save Node</button>
       </div>
 
-      <label>Title</label>
+      <FieldLabel help="The name people see first. Keep it human: a person, question, claim, source, place, event, or thing someone can point to." href={canonicalHelpUrl("property", "title")}>Title</FieldLabel>
       <input value={frontMatter.title || ""} onChange={(e) => updateFrontMatter("title", e.target.value)} />
 
-      <label>Type</label>
+      <FieldLabel help="A node type says what kind of thing this is. Studio reads these from the protocol registry, so the choices stay aligned with Core and Hugo." href={canonicalHelpUrl("node-type", type)}>Type</FieldLabel>
       <select value={type} onChange={(e) => updateFrontMatter("type", e.target.value)}>
         {NODE_TYPE_DEFINITIONS.map((nodeType) => (
           <option value={nodeType.type} key={nodeType.type}>{nodeType.label} ({nodeType.type})</option>
@@ -674,37 +863,43 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
       </select>
       {typeDefinition?.purpose && <p className="field-help">{typeDefinition.purpose}</p>}
 
-      <label>Subtype</label>
+      <FieldLabel help="A subtype narrows the main type without inventing a whole new category. For example, a person can be a writer, researcher, maintainer, or witness." href={canonicalHelpUrl("property", "subtype")}>Subtype</FieldLabel>
       <select value={frontMatter.subtype || ""} onChange={(e) => updateFrontMatter("subtype", e.target.value || undefined)}>
         <option value="">No subtype</option>
         {allowedSubtypes.map((subtype) => <option value={subtype} key={subtype}>{subtype}</option>)}
         {frontMatter.subtype && !allowedSubtypes.includes(frontMatter.subtype) && <option value={frontMatter.subtype}>{frontMatter.subtype}</option>}
       </select>
 
-      <label>Additional subtypes</label>
+      <FieldLabel help="Use additional subtypes when the node legitimately wears more than one narrower role. This is not a replacement for relationships." href={canonicalHelpUrl("property", "subtypes")}>Additional subtypes</FieldLabel>
       <input
         value={(frontMatter.subtypes || []).join(", ")}
         onChange={(e) => updateListFrontMatter("subtypes", e.target.value)}
         placeholder={allowedSubtypes.slice(0, 3).join(", ")}
       />
 
-      <label>Facets</label>
+      <FieldLabel help="Facets are secondary lenses for filtering and authoring. They help say, for example, that a quote can behave like evidence, a claim, and a source fragment." href={canonicalHelpUrl("property", "facets")}>Facets</FieldLabel>
       <input
         value={(frontMatter.facets || []).join(", ")}
         onChange={(e) => updateListFrontMatter("facets", e.target.value)}
         placeholder="source, claim, fragment"
       />
 
-      <label>Summary</label>
+      <FieldLabel help="A short human sentence that tells readers why this node exists. If the graph only showed this line, it should still make sense." href={canonicalHelpUrl("property", "summary")}>Summary</FieldLabel>
       <textarea rows={3} value={frontMatter.summary || ""} onChange={(e) => updateFrontMatter("summary", e.target.value)} />
 
-      <label>Content</label>
+      <FieldLabel help="The authored prose for this node. Relationships, sources, and transclusions should carry the structure around it instead of forcing everything into text." href={canonicalHelpUrl("property", "content")}>Content</FieldLabel>
       <textarea className="body-editor" value={draft.body || ""} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
 
       <section className="editor-section">
-        <div className="panel-title">Relationships</div>
-        <div className="relationship-form">
-          <select value={relationshipCategory} onChange={(e) => {
+        <div className="panel-row">
+          <div className="panel-title">Relationships</div>
+          <HelpHint title="Relationships" href={canonicalHelpUrl("concept", "typed-relationships")}>
+            Relationships say why two nodes belong together. Pick the meaning first, then choose a target or click two nodes on the graph.
+          </HelpHint>
+        </div>
+        <div className="relationship-catalog">
+          <div className="relationship-filters">
+            <select value={relationshipCategory} onChange={(e) => {
             const nextCategory = e.target.value;
             setRelationshipCategory(nextCategory);
             const nextDefinition = nextCategory === "all"
@@ -717,11 +912,35 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
             <option value="all">All categories</option>
             {RELATIONSHIP_CATEGORIES.map((category) => <option value={category} key={category}>{category}</option>)}
           </select>
-          <select value={relationshipType} onChange={(e) => setRelationshipType(e.target.value)}>
-            {filteredRelationshipDefinitions.map((definition) => (
-              <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
+            <input value={relationshipQuery} onChange={(e) => setRelationshipQuery(e.target.value)} placeholder="Search relationship meanings" />
+          </div>
+          <div className="relationship-type-list">
+            {searchedRelationshipDefinitions.slice(0, 24).map((definition) => (
+              <button
+                type="button"
+                className={`relationship-type-option ${relationshipType === definition.type ? "selected" : ""}`}
+                key={definition.type}
+                onClick={() => setRelationshipType(definition.type)}
+                title={definition.meaning}
+              >
+                <span>{definition.label}</span>
+                <small>{definition.type}</small>
+              </button>
             ))}
-          </select>
+          </div>
+        </div>
+        {selectedRelationshipDefinition && (
+          <div className="relationship-definition">
+            <span className="pill">{selectedRelationshipDefinition.category}</span>
+            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
+            <p>{selectedRelationshipDefinition.meaning}</p>
+            <div className="relationship-actions">
+              <button type="button" onClick={() => startRelationshipLink(relationshipType)}>Click two graph nodes</button>
+              <a href={canonicalHelpUrl("relationship-type", relationshipType)} target="_blank" rel="noreferrer">Canonical node</a>
+            </div>
+          </div>
+        )}
+        <div className="relationship-form">
           <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
             <option value="">Choose target</option>
             {nodes.map((node) => <option value={node.id || node.slug || node.title} key={nodeKey(node)}>{node.title || node.id}</option>)}
@@ -731,13 +950,6 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
             setRelationshipTarget("");
           }}>Add</button>
         </div>
-        {selectedRelationshipDefinition && (
-          <div className="relationship-definition">
-            <span className="pill">{selectedRelationshipDefinition.category}</span>
-            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
-            <p>{selectedRelationshipDefinition.meaning}</p>
-          </div>
-        )}
         {relationships.length ? relationships.map((rel, i) => (
           <div className="relationship-chip" key={i}>
             <strong>{relationshipLabel(rel.type)}</strong>
@@ -769,6 +981,28 @@ function groupNodes(nodes, mode) {
     groups[key].push(node);
   }
   return Object.fromEntries(Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function canonicalHelpUrl(kind, id) {
+  const cleanId = String(id || "").trim();
+  if (!cleanId) return "https://xananode.com/";
+  if (kind === "node-type") return `https://xananode.com/schema/xananode.canonical%3Aschema/node-type-${encodeURIComponent(cleanId)}/`;
+  if (kind === "relationship-type") return `https://xananode.com/schema/xananode.canonical%3Aschema/relationship-type-${encodeURIComponent(cleanId)}/`;
+  if (kind === "property") return `https://xananode.com/schema/xananode.canonical%3Aschema/property-${encodeURIComponent(cleanId)}/`;
+  if (kind === "concept") return `https://xananode.com/concept/${encodeURIComponent(cleanId)}/`;
+  return "https://xananode.com/";
+}
+
+function isCanonicalWorkspace(workspace) {
+  const manifest = workspace?.manifest || {};
+  const text = [
+    manifest.id,
+    manifest.name,
+    manifest.namespace,
+    manifest.substrate_id,
+    workspace?.rootDir
+  ].filter(Boolean).join(" ").toLowerCase();
+  return text.includes("xananode.canonical") || text.includes("canonical xananode") || text.includes("xananode canonical");
 }
 
 function relationshipLabel(type) {
@@ -1006,6 +1240,7 @@ function createUnavailableApi() {
     importAssets: unavailable,
     saveSnapshot: unavailable,
     build: unavailable,
+    exportPack: unavailable,
     validate: unavailable,
     openInShell: unavailable,
     startHugoPreview: unavailable,

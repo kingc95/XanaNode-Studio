@@ -1,8 +1,12 @@
 # XanaNode Studio
 
-Local-first desktop studio for authoring XanaNode knowledge substrates.
+Local-first desktop studio for making and maintaining XanaNode substrates.
 
-This is the first usable scaffold for the real Studio app. It is intentionally built as a modular desktop shell around `@xananode/workspace`, which itself sits on `@xananode/core`. Studio also embeds the Hugo renderer so the editing preview matches the published site.
+Studio is where an author can shape a substrate directly: create a node, choose what kind of thing it is, connect it to other nodes with named relationships, check the work, and preview how the substrate can be projected for readers.
+
+A substrate can be projected in more than one way. The graph projection helps authors see structure. The Hugo projection shows the same substrate as a readable website. Hugo is one lens, not the substrate itself.
+
+This project is a XanaNode-compatible authoring application. Canonical specification: `https://github.com/kingc95/XanaNode`. Studio/reference implementation code is licensed under `Apache-2.0`; the XanaNode name and logo remain project trademarks.
 
 ## Current stack
 
@@ -18,18 +22,19 @@ XanaNode Studio
 
 Hugo also depends on Core directly. That is intentional: people who use the Hugo theme without Studio still get the same protocol validation path.
 
-## What this first version includes
+## What this version includes
 
 - Electron + React + Vite desktop app
 - Three-panel Studio layout
-  - left: substrate catalog / tools
-  - center: Hugo preview, health, logs
+  - left: catalog views of the substrate
+  - center: graph projection, Hugo projection, health, and logs
   - right: node editor
 - Open existing workspace
 - Create new workspace
 - Create nodes
-- Edit node title/type/summary/content
-- Add relationships with type-aware hints
+- Edit node title, type, subtype, facets, summary, and content
+- Pick relationship types from the protocol registry
+- Click two graph nodes to draft a relationship visually
 - Import media/source assets through the Workspace API
 - Build substrate artifacts through Workspace/Core
 - Run validation/health checks
@@ -72,14 +77,16 @@ npm test
 
 ## Important notes
 
-This is not trying to replace Hugo. Hugo remains the canonical published viewer for now. Studio runs Hugo locally and embeds the real rendered output so the editor does not drift from the website.
+Studio is not replacing Hugo. Hugo remains the public website projection for now. Studio can run Hugo locally when you want to see that lens, but the graph projection is available without starting Hugo.
 
-This is also not trying to make Git visible to normal users. Git is used underneath as the default versioning layer, but the UI uses terms like **Save Snapshot**, **History**, **Publish**, and **Propose Change**.
+Studio is also not trying to make Git the user experience. Git is used underneath as the default versioning layer, but the UI should speak in terms like **Save Snapshot**, **History**, **Publish**, and **Propose Change**.
+
+The demo workspace starts with a plain question: **How do you make a campfire?** That small example is there on purpose. It shows that a substrate can start with an everyday inquiry, then grow into claims, evidence, sources, safety gaps, and relationships.
 
 ## Next implementation steps
 
-1. Add a real front matter editor that preserves unknown fields.
-2. Add relationship schema registry autocomplete from `@xananode/core`.
+1. Preserve every unknown field while editing front matter.
+2. Load the XanaNode Canonical substrate as a built-in manual graph.
 3. Add author profile setup wizard.
 4. Add Git history and visual diff UI.
 5. Add import manager for federated substrates.

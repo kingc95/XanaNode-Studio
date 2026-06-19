@@ -8,6 +8,7 @@ import {
   initWorkspace,
   openWorkspace,
   buildWorkspace,
+  exportWorkspacePack,
   validateWorkspace,
   computeKnowledgeHealth,
   createNode,
@@ -225,6 +226,16 @@ ipcMain.handle("workspace:build", async () => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const result = await buildWorkspace(currentWorkspaceDir);
+    return ok({ result });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:exportPack", async () => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const result = await exportWorkspacePack(currentWorkspaceDir);
     return ok({ result });
   } catch (error) {
     return fail(error);

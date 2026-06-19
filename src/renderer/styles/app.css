@@ -105,6 +105,64 @@ label {
   margin: 1rem 0 0.4rem;
 }
 
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+}
+
+.help-hint {
+  position: relative;
+  display: inline-block;
+  border: 0;
+  padding: 0;
+}
+
+.help-hint summary {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(85, 214, 190, 0.42);
+  border-radius: 999px;
+  color: var(--xana-accent);
+  background: rgba(85, 214, 190, 0.08);
+  font-size: 0.68rem;
+  line-height: 1;
+  list-style: none;
+}
+
+.help-hint summary::-webkit-details-marker {
+  display: none;
+}
+
+.help-popover {
+  position: absolute;
+  right: 0;
+  top: 1.5rem;
+  z-index: 20;
+  width: min(320px, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--xana-accent-border);
+  border-radius: 0.75rem;
+  background: rgba(5, 7, 10, 0.98);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.48);
+  color: #cbd5e1;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.help-popover p {
+  margin: 0.4rem 0 0.6rem;
+}
+
+.help-popover a {
+  color: var(--xana-accent);
+  font-weight: 850;
+}
+
 pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -226,14 +284,18 @@ pre {
   overflow: auto;
   background: var(--xana-panel-bg);
   padding: 0.75rem;
+  min-width: 260px;
+  max-width: 55vw;
 }
 
 .left-panel {
   border-right: 1px solid var(--xana-panel-border);
+  resize: horizontal;
 }
 
 .right-panel {
   border-left: 1px solid var(--xana-panel-border);
+  resize: horizontal;
 }
 
 .center-panel {
@@ -279,6 +341,17 @@ pre {
   font-weight: 900;
   font-size: 1.02rem;
   margin: 0.65rem 0;
+}
+
+.canon-warning {
+  margin: 0.55rem 0;
+  padding: 0.58rem 0.65rem;
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  border-radius: 0.7rem;
+  color: #ffe2a3;
+  background: rgba(255, 209, 102, 0.08);
+  font-size: 0.8rem;
+  line-height: 1.45;
 }
 
 .pill-row {
@@ -346,13 +419,21 @@ summary {
 }
 
 .center-tabs {
-  height: 48px;
+  min-height: 48px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.35rem;
   padding: 0 0.75rem;
   border-bottom: 1px solid var(--xana-panel-border);
   background: rgba(5, 7, 10, 0.84);
+  flex-wrap: wrap;
+}
+
+.tab-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .center-tabs button.active {
@@ -368,6 +449,67 @@ summary {
   position: relative;
   display: flex;
   flex-direction: column;
+}
+
+.projection-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+}
+
+.projection-split .graph-wrap {
+  border-right: 1px solid var(--xana-panel-border);
+}
+
+.split-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--xana-text-muted);
+  font-size: 0.78rem;
+  min-width: 190px;
+}
+
+.split-control input {
+  padding: 0;
+}
+
+.link-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #b8fff0;
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.link-mode-banner button {
+  min-height: 28px;
+  padding: 0.24rem 0.5rem;
+}
+
+.graph-instruction {
+  position: absolute;
+  top: 1.65rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  max-width: calc(100% - 3rem);
+  padding: 0.42rem 0.7rem;
+  border: 1px solid rgba(85, 214, 190, 0.45);
+  border-radius: 999px;
+  background: rgba(5, 7, 10, 0.88);
+  color: #b8fff0;
+  font-size: 0.78rem;
+  font-weight: 850;
+  pointer-events: none;
+}
+
+.graph-wrap.linking .graph-node circle {
+  stroke: rgba(85, 214, 190, 0.62);
 }
 
 .graph-svg {
@@ -448,6 +590,10 @@ summary {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(120px, 25%);
   background: var(--xana-bg);
+}
+
+.preview-shell.compact {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .preview-debug {
@@ -615,10 +761,50 @@ summary {
   padding-top: 1rem;
 }
 
+.relationship-catalog {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.relationship-filters,
 .relationship-form {
   display: grid;
-  grid-template-columns: 1fr 1.2fr 1.3fr auto;
+  grid-template-columns: 1fr 1fr;
   gap: 0.4rem;
+}
+
+.relationship-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 0.5rem;
+}
+
+.relationship-type-list {
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 0.35rem;
+  padding-right: 0.2rem;
+}
+
+.relationship-type-option {
+  text-align: left;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  justify-content: center;
+  gap: 0.12rem;
+}
+
+.relationship-type-option.selected {
+  border-color: var(--xana-accent);
+  background: rgba(85, 214, 190, 0.14);
+}
+
+.relationship-type-option small {
+  color: var(--xana-text-muted);
+  font-size: 0.68rem;
 }
 
 .relationship-chip,
@@ -654,6 +840,20 @@ summary {
 .relationship-definition p {
   margin: 0.5rem 0 0;
   line-height: 1.45;
+}
+
+.relationship-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+
+.relationship-actions a {
+  color: var(--xana-accent);
+  font-weight: 850;
+  font-size: 0.78rem;
 }
 
 .suggestion {
