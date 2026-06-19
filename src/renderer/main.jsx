@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import nodeTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
 import relationshipTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
+import xananodeIconUrl from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
 import "./styles/app.css";
 
 const NODE_TYPE_DEFINITIONS = [...nodeTypeRegistry.node_types].sort((a, b) => a.label.localeCompare(b.label));
@@ -296,7 +297,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="logo-mark">X</div>
+          <img className="logo-mark" src={xananodeIconUrl} alt="XanaNode protocol icon" />
           <div>
             <div className="brand-title">XanaNode Studio</div>
             <div className="brand-subtitle">Local-first substrate workbench</div>

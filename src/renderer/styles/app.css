@@ -158,15 +158,10 @@ pre {
   width: 30px;
   height: 30px;
   border-radius: 7px;
-  display: grid;
-  place-items: center;
-  background:
-    linear-gradient(135deg, #0d47a1 0 38%, transparent 38% 62%, #ff8c00 62%),
-    #05070a;
+  object-fit: contain;
+  background: #05070a;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  color: var(--xana-accent);
-  font-weight: 950;
-  font-size: 0.82rem;
+  padding: 3px;
 }
 
 .brand-title {
