@@ -24,12 +24,14 @@ const NODE_TYPES = [
   "fragment"
 ];
 const RELATIONSHIP_HINTS = {
-  claim: ["supports", "contradicts", "evidence_for", "derived_from", "cites", "qualified_by"],
-  source: ["supports", "derived_from", "cites", "contains", "transcludes"],
+  claim: ["supports", "contradicts", "has_evidence", "evidence_for", "derived_from", "cites"],
+  source: ["supports", "derived_from", "cites", "contains", "documents", "transcludes"],
   concept: ["related_to", "broader_than", "narrower_than", "explains", "derived_from"],
-  publication: ["contains", "created_by", "cites", "derived_from"],
-  event: ["caused_by", "resulted_in", "occurred_at", "involved"],
-  trail: ["starts_with", "continues_to", "ends_with"]
+  publication: ["contains", "authored", "created_by", "cites", "derived_from"],
+  event: ["occurred_at", "had_participant", "featured_speaker", "introduced", "context_for"],
+  trail: ["starts_with", "continues_to", "arrives_at", "is_start_of"],
+  media: ["depicts", "documents", "created_by", "derived_from", "primary_media_of"],
+  project: ["implements", "uses", "depends_on", "documents", "extends"]
 };
 
 function App() {
@@ -42,7 +44,7 @@ function App() {
   const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewLogs, setPreviewLogs] = useState([]);
-  const [centerMode, setCenterMode] = useState("preview");
+  const [centerMode, setCenterMode] = useState("graph");
   const [catalogMode, setCatalogMode] = useState("type");
   const api = window.xananode || createUnavailableApi();
   const previewFrameRef = useRef(null);
@@ -242,7 +244,7 @@ function App() {
     const refreshed = await run(() => api.refreshWorkspace(), "Trial workspace ready");
     if (refreshed?.workspace) {
       setSelectedNode(refreshed.workspace.nodes?.[0] || null);
-      setCenterMode("preview");
+      setCenterMode("graph");
     }
   }
 
@@ -299,6 +301,7 @@ function App() {
     };
     setSelectedNode(null);
     setDraft(next);
+    setCenterMode("graph");
   }
 
   function addRelationship(type, target) {
@@ -393,10 +396,12 @@ function App() {
           </aside>
           <section className="center-panel">
             <div className="center-tabs">
-              <button className={centerMode === "preview" ? "active" : ""} onClick={() => setCenterMode("preview")}>Hugo Preview</button>
+              <button className={centerMode === "graph" ? "active" : ""} onClick={() => setCenterMode("graph")}>Graph</button>
+              <button className={centerMode === "preview" ? "active" : ""} onClick={() => setCenterMode("preview")}>Hugo Projection</button>
               <button className={centerMode === "health" ? "active" : ""} onClick={() => setCenterMode("health")}>Health</button>
               <button className={centerMode === "logs" ? "active" : ""} onClick={() => setCenterMode("logs")}>Logs</button>
             </div>
+            {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={selectNode} />}
             {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} />}
             {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} />}
             {centerMode === "logs" && <LogView logs={previewLogs} />}
@@ -423,8 +428,8 @@ function Welcome({ onOpen, onCreate, onTrial }) {
     <main className="welcome">
       <div className="welcome-card">
         <div className="kicker">XanaNode Studio</div>
-        <h1>Author the substrate for the Hugo preview.</h1>
-        <p>Open a local XanaNode workspace, edit nodes, manage relationships, preview the published Hugo site, validate the substrate, and save clean snapshots without making Git the interface.</p>
+        <h1>Author the substrate itself.</h1>
+        <p>Open a local XanaNode workspace, create nodes, connect relationships, validate the substrate, save snapshots, and preview projection layers when you need them.</p>
         <div className="welcome-actions">
           <button className="primary" onClick={onCreate}>Create Workspace</button>
           <button onClick={onTrial}>Try Demo Workspace</button>
@@ -514,12 +519,68 @@ function SnapshotDialog({ defaultMessage, onSave, onClose }) {
   );
 }
 
+function GraphView({ nodes, selectedNode, draft, onSelect }) {
+  const current = draft || selectedNode || nodes[0] || null;
+  const graph = useMemo(() => buildLocalGraph(nodes, current), [nodes, current]);
+
+  if (!nodes.length) {
+    return (
+      <div className="empty-panel">
+        <h2>No nodes yet.</h2>
+        <p>Create the first node from the catalog panel.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="graph-wrap">
+      <svg className="graph-svg" viewBox="0 0 900 620" role="img" aria-label="Workspace substrate graph">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(85, 214, 190, 0.72)" />
+          </marker>
+        </defs>
+        {graph.edges.map((edge) => (
+          <g key={edge.key}>
+            <line
+              className="edge"
+              x1={edge.source.x}
+              y1={edge.source.y}
+              x2={edge.target.x}
+              y2={edge.target.y}
+              markerEnd="url(#arrow)"
+            />
+            <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
+              {humanizeRelationship(edge.type)}
+            </text>
+          </g>
+        ))}
+        {graph.nodes.map((node) => (
+          <g
+            key={node.key}
+            className={`graph-node ${node.selected ? "selected" : ""}`}
+            transform={`translate(${node.x} ${node.y})`}
+            onClick={() => onSelect(node.source)}
+          >
+            <circle r={node.selected ? 46 : 32} />
+            <text textAnchor="middle" y="-3">{trimLabel(node.title, node.selected ? 24 : 16)}</text>
+            <text className="graph-type" textAnchor="middle" y="15">{node.type || "node"}</text>
+          </g>
+        ))}
+      </svg>
+      <div className="graph-caption">
+        {current ? `${graph.nodes.length} visible nodes around ${current.title || current.id || "selected node"}` : `${nodes.length} workspace nodes`}
+      </div>
+    </div>
+  );
+}
+
 function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs }) {
   if (!previewUrl) {
     return (
       <div className="empty-panel">
         <h2>Hugo preview is not running.</h2>
-        <p>Start the local Hugo server to see the substrate exactly as it will publish.</p>
+        <p>Start the local Hugo server when you want to inspect that projection layer.</p>
         <button className="primary" onClick={startPreview}>Start Hugo Preview</button>
       </div>
     );
@@ -657,6 +718,120 @@ function groupNodes(nodes, mode) {
     groups[key].push(node);
   }
   return Object.fromEntries(Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function buildLocalGraph(nodes, current) {
+  const graphNodes = current && !nodes.some((node) => nodeKey(node) === nodeKey(current))
+    ? [current, ...nodes]
+    : nodes;
+  const byRef = new Map();
+  for (const node of graphNodes) {
+    for (const ref of nodeRefs(node)) byRef.set(ref, node);
+  }
+
+  const currentRef = normalizeNodeRef(current?.id || current?.slug || current?.title || "");
+  const rawEdges = [];
+  for (const node of graphNodes) {
+    const relationships = Array.isArray(node.relationships) ? node.relationships : [];
+    const sourceRef = normalizeNodeRef(node.id || node.slug || node.title);
+    for (const rel of relationships) {
+      const targetRef = normalizeNodeRef(rel.target || rel.to || rel.node || rel.id);
+      const target = byRef.get(targetRef);
+      if (!sourceRef || !targetRef || !target) continue;
+      rawEdges.push({
+        sourceRef,
+        targetRef,
+        source: node,
+        target,
+        type: rel.type || "related_to"
+      });
+    }
+  }
+
+  const visibleRefs = new Set();
+  if (currentRef) visibleRefs.add(currentRef);
+  for (const edge of rawEdges) {
+    if (edge.sourceRef === currentRef) visibleRefs.add(edge.targetRef);
+    if (edge.targetRef === currentRef) visibleRefs.add(edge.sourceRef);
+  }
+
+  if (!visibleRefs.size) {
+    for (const node of graphNodes.slice(0, 16)) visibleRefs.add(normalizeNodeRef(node.id || node.slug || node.title));
+  }
+
+  let visibleNodes = [...visibleRefs]
+    .map((ref) => byRef.get(ref))
+    .filter(Boolean);
+  if (visibleNodes.length < Math.min(graphNodes.length, 8)) {
+    const existing = new Set(visibleNodes.map((node) => nodeKey(node)));
+    for (const node of graphNodes) {
+      if (visibleNodes.length >= 8) break;
+      if (!existing.has(nodeKey(node))) visibleNodes.push(node);
+    }
+  }
+  visibleNodes = visibleNodes.slice(0, 18);
+
+  const centerX = 450;
+  const centerY = 310;
+  const radius = visibleNodes.length > 10 ? 245 : 205;
+  const selectedIndex = Math.max(0, visibleNodes.findIndex((node) => normalizeNodeRef(node.id || node.slug || node.title) === currentRef));
+  const arranged = visibleNodes.map((node, index) => {
+    const selected = index === selectedIndex;
+    if (selected) return { key: nodeKey(node), source: node, title: node.title || node.id || "Untitled", type: node.type, selected: true, x: centerX, y: centerY };
+    const orbitIndex = index > selectedIndex ? index - 1 : index;
+    const orbitCount = Math.max(1, visibleNodes.length - 1);
+    const angle = (Math.PI * 2 * orbitIndex) / orbitCount - Math.PI / 2;
+    return {
+      key: nodeKey(node),
+      source: node,
+      title: node.title || node.id || "Untitled",
+      type: node.type,
+      selected: false,
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius
+    };
+  });
+
+  const arrangedByRef = new Map();
+  for (const node of arranged) {
+    for (const ref of nodeRefs(node.source)) arrangedByRef.set(ref, node);
+  }
+
+  const edges = rawEdges
+    .map((edge, index) => ({
+      key: `${edge.sourceRef}-${edge.type}-${edge.targetRef}-${index}`,
+      source: arrangedByRef.get(edge.sourceRef),
+      target: arrangedByRef.get(edge.targetRef),
+      type: edge.type
+    }))
+    .filter((edge) => edge.source && edge.target && edge.source.key !== edge.target.key)
+    .slice(0, 40);
+
+  return { nodes: arranged, edges };
+}
+
+function nodeRefs(node) {
+  return [
+    node?.id,
+    node?.protocolId,
+    node?.protocol_id,
+    node?.slug,
+    node?.title,
+    node?.relativePath,
+    node?.path,
+    node?.filePath,
+    node?.frontMatter?.id,
+    node?.frontMatter?.slug
+  ].filter(Boolean).map(normalizeNodeRef);
+}
+
+function humanizeRelationship(value) {
+  return String(value || "related_to").replace(/_/g, " ");
+}
+
+function trimLabel(value, max) {
+  const text = String(value || "Untitled");
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
 }
 
 function makeDraft(node) {

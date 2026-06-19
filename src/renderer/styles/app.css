@@ -238,10 +238,7 @@ pre {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(circle at 35% 30%, rgba(85, 214, 190, 0.12), transparent 30%),
-    radial-gradient(circle at 75% 70%, rgba(255, 209, 102, 0.1), transparent 25%),
-    var(--xana-bg);
+  background: var(--xana-bg);
 }
 
 .panel-card {
@@ -367,17 +364,32 @@ summary {
   min-height: 0;
   padding: 1rem;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .graph-svg {
   width: 100%;
-  height: calc(100% - 28px);
-  min-height: 500px;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--xana-panel-border);
+  border-radius: 8px;
+  background: rgba(5, 7, 10, 0.72);
 }
 
 .edge {
-  stroke: rgba(148, 163, 184, 0.46);
-  stroke-width: 1.2;
+  stroke: rgba(85, 214, 190, 0.54);
+  stroke-width: 1.4;
+}
+
+.edge-label {
+  fill: #cbd5e1;
+  paint-order: stroke;
+  stroke: rgba(5, 7, 10, 0.92);
+  stroke-width: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
 }
 
 .graph-node {
@@ -401,12 +413,22 @@ summary {
   font-size: 12px;
   font-weight: 800;
   pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(5, 7, 10, 0.8);
+  stroke-width: 4px;
+}
+
+.graph-node .graph-type {
+  fill: var(--xana-accent);
+  font-size: 9px;
+  text-transform: uppercase;
 }
 
 .graph-caption {
   color: var(--xana-text-muted);
   font-size: 0.78rem;
   text-align: center;
+  padding-top: 0.6rem;
 }
 
 .preview-frame {
@@ -452,10 +474,7 @@ summary {
 }
 
 .welcome {
-  background:
-    radial-gradient(circle at 32% 24%, rgba(85, 214, 190, 0.12), transparent 30%),
-    radial-gradient(circle at 72% 66%, rgba(255, 140, 0, 0.1), transparent 28%),
-    var(--xana-bg);
+  background: var(--xana-bg);
 }
 
 .welcome-card {
@@ -692,6 +711,10 @@ summary {
 
   .center-panel {
     min-height: 560px;
+  }
+
+  .graph-wrap {
+    min-height: 520px;
   }
 
   .health-columns,
