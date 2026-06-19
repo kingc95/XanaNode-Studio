@@ -314,16 +314,29 @@ function App() {
     if (!draft) return;
     const relativeFile = draft.relativePath || draft.path || draft.filePath || draft.__file;
     if (!relativeFile) {
-      await run(
+      const result = await run(
         () => api.createNode({ node: draft.frontMatter || draft, body: draft.body || `# ${draft.title || "Untitled"}\n\n` }),
         "Created node"
       );
-      setDraft(null);
+      const saved = findWorkspaceNode(result?.result?.data?.id || draft.frontMatter?.id || draft.frontMatter?.title, result?.workspace?.nodes || []);
+      if (saved) {
+        setSelectedNode(saved);
+        setDraft(makeDraft(saved));
+      }
       return;
     }
     const nodeData = draft.frontMatter || extractFrontMatterShape(draft);
-    await run(() => api.updateNode({ relativeFile, nodeData, body: draft.body || "" }), "Saved node");
-    setDraft(null);
+    const result = await run(() => api.updateNode({ relativeFile, nodeData, body: draft.body || "" }), "Saved node");
+    const saved = findWorkspaceNode(
+      nodeData.protocol_id || nodeData.id || nodeData.title || relativeFile,
+      result?.workspace?.nodes || []
+    );
+    if (saved) {
+      setSelectedNode(saved);
+      setDraft(makeDraft(saved));
+    } else {
+      setDraft({ ...draft, frontMatter: nodeData });
+    }
   }
 
   async function saveSnapshot(reason) {
@@ -704,6 +717,17 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
           <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(85, 214, 190, 0.72)" />
           </marker>
+          {graph.nodes.map((node) => {
+            const colors = nodeTypeColors(node.source);
+            if (colors.length < 2) return null;
+            return (
+              <linearGradient id={nodeGradientId(node)} key={node.key} x1="0%" y1="0%" x2="100%" y2="100%">
+                {colors.map((color, index) => (
+                  <stop key={`${color}-${index}`} offset={`${Math.round((index / Math.max(1, colors.length - 1)) * 100)}%`} stopColor={color} />
+                ))}
+              </linearGradient>
+            );
+          })}
         </defs>
         {graph.edges.map((edge) => (
           <g key={edge.key}>
@@ -713,6 +737,8 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
               y1={edge.source.y}
               x2={edge.target.x}
               y2={edge.target.y}
+              stroke={relationshipColor(edge.type)}
+              strokeDasharray={relationshipDash(edge.type)}
               markerEnd="url(#arrow)"
             />
             <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
@@ -727,7 +753,11 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
             transform={`translate(${node.x} ${node.y})`}
             onClick={() => onSelect(node.source)}
           >
-            <circle r={node.selected ? 46 : 32} />
+            <circle
+              r={node.selected ? 46 : 32}
+              fill={nodeFill(node)}
+              stroke={nodeStroke(node.source)}
+            />
             <text textAnchor="middle" y="-3">{trimLabel(node.title, node.selected ? 24 : 16)}</text>
             <text className="graph-type" textAnchor="middle" y="15">{node.type || "node"}</text>
           </g>
@@ -1179,6 +1209,44 @@ function nodeRelationships(node) {
   }));
 }
 
+function nodeTypeColors(node) {
+  const frontMatter = node?.frontMatter || node?.data || node || {};
+  const types = [
+    frontMatter.type || node?.type,
+    ...(Array.isArray(frontMatter.facets) ? frontMatter.facets : [])
+  ].filter(Boolean);
+  const colors = types
+    .map((type) => NODE_TYPES_BY_TYPE[type]?.color)
+    .filter(Boolean);
+  return [...new Set(colors)];
+}
+
+function nodeFill(node) {
+  const colors = nodeTypeColors(node.source || node);
+  if (colors.length > 1) return `url(#${nodeGradientId(node)})`;
+  return colors[0] || "rgba(21, 25, 34, 0.96)";
+}
+
+function nodeGradientId(node) {
+  return `node-gradient-${String(node?.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
+}
+
+function nodeStroke(node) {
+  return nodeTypeColors(node)[0] || "rgba(255, 255, 255, 0.3)";
+}
+
+function relationshipColor(type) {
+  return RELATIONSHIP_TYPES_BY_TYPE[type]?.color || "rgba(85, 214, 190, 0.72)";
+}
+
+function relationshipDash(type) {
+  const style = RELATIONSHIP_TYPES_BY_TYPE[type]?.line_style || "";
+  if (style === "dashed") return "8 6";
+  if (style === "dotted") return "2 6";
+  if (style === "double") return "12 3 2 3";
+  return "";
+}
+
 function humanizeRelationship(value) {
   return String(value || "related_to").replace(/_/g, " ");
 }
@@ -1199,11 +1267,13 @@ function makeDraft(node) {
 }
 
 function extractFrontMatterShape(node) {
-  const ignored = new Set(["body", "content", "frontMatter", "relativePath", "path", "filePath", "__file"]);
-  const result = {};
+  const ignored = new Set(["body", "content", "frontMatter", "relativePath", "path", "filePath", "__file", "data", "fullPath", "raw"]);
+  const result = { ...(node?.data || {}) };
   for (const [key, value] of Object.entries(node || {})) {
     if (!ignored.has(key)) result[key] = value;
   }
+  if (node?.protocolId && !result.protocol_id) result.protocol_id = node.protocolId;
+  if (node?.protocol_id && !result.protocol_id) result.protocol_id = node.protocol_id;
   if (!result.relationships) result.relationships = [];
   return result;
 }

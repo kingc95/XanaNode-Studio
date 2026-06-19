@@ -529,7 +529,6 @@ summary {
 }
 
 .edge {
-  stroke: rgba(85, 214, 190, 0.54);
   stroke-width: 1.4;
 }
 
@@ -548,15 +547,12 @@ summary {
 }
 
 .graph-node circle {
-  fill: rgba(21, 25, 34, 0.96);
-  stroke: rgba(255, 255, 255, 0.3);
   stroke-width: 1.5;
 }
 
 .graph-node.selected circle {
-  fill: rgba(85, 214, 190, 0.2);
-  stroke: var(--xana-accent);
   stroke-width: 2.6;
+  filter: drop-shadow(0 0 12px rgba(85, 214, 190, 0.22));
 }
 
 .graph-node text {

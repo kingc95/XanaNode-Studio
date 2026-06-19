@@ -340,7 +340,7 @@ async function runPreviewPreparation(siteRoot) {
   if (!scriptPath) return;
 
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath, siteRoot], {
+    const child = spawn("node", [scriptPath, siteRoot], {
       cwd: siteRoot,
       shell: false
     });
