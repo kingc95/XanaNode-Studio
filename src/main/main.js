@@ -333,7 +333,8 @@ function stopHugoPreview() {
 async function runPreviewPreparation(siteRoot) {
   const candidateScripts = [
     path.join(siteRoot, "themes", "xananode-hugo", "tools", "prepare-xananode.mjs"),
-    path.join(siteRoot, "tools", "prepare-xananode.mjs")
+    path.join(siteRoot, "tools", "prepare-xananode.mjs"),
+    path.join(resolveBundledHugoRoot(), "tools", "prepare-xananode.mjs")
   ];
   const scriptPath = candidateScripts.find((candidate) => fs.existsSync(candidate));
   if (!scriptPath) return;
@@ -354,7 +355,9 @@ async function runPreviewPreparation(siteRoot) {
 }
 
 async function resolveHugoServerInvocation(preview) {
-  const [cmd, ...args] = preview.command.split(/\s+/).filter(Boolean);
+  const [cmd, ...args] = preview.cmd
+    ? [preview.cmd, ...(preview.args || [])]
+    : preview.command.split(/\s+/).filter(Boolean);
   if (!cmd) throw new Error("No Hugo preview command configured.");
 
   const isHugoServer = path.basename(cmd).toLowerCase().startsWith("hugo") && args[0] === "server";
@@ -418,9 +421,7 @@ async function preparePreviewArtifacts(siteRoot) {
 }
 
 function syncPreviewThemeBridge(siteRoot) {
-  const bundledHugoRoot = path.join(app.getAppPath(), "vendor", "xananode-hugo");
-  const localHugoRoot = path.join(app.getPath("documents"), "XanaNode-Hugo");
-  const hugoRoot = fs.existsSync(bundledHugoRoot) ? bundledHugoRoot : localHugoRoot;
+  const hugoRoot = resolveBundledHugoRoot();
   const themeRoot = path.join(siteRoot, "themes", "xananode-hugo");
   const bridgeFiles = [
     ["static", "js", "xananode.js"],
@@ -440,6 +441,13 @@ function syncPreviewThemeBridge(siteRoot) {
   if (copied) {
     mainWindow?.webContents.send("preview:log", `Synced XanaNode Hugo preview bridge files (${copied}).\n`);
   }
+}
+
+function resolveBundledHugoRoot() {
+  const bundledHugoRoot = path.join(app.getAppPath(), "vendor", "xananode-hugo");
+  const localHugoRoot = path.join(app.getPath("documents"), "XanaNode-Hugo");
+  const workspaceHugoRoot = path.join(appRoot, "vendor", "xananode-hugo");
+  return [bundledHugoRoot, workspaceHugoRoot, localHugoRoot].find((candidate) => fs.existsSync(candidate)) || bundledHugoRoot;
 }
 
 function writeHugoIndexJson(outputDir, substrate) {
@@ -552,7 +560,13 @@ function resolvePreviewInvocation(workspaceDir, previewSettings = {}) {
   }
 
   if (!hasRootConfig) {
-    throw new Error(`No Hugo config found for this substrate: ${cwd}`);
+    const projectionRoot = createWorkspaceHugoProjection(workspaceDir);
+    return {
+      cwd: projectionRoot,
+      cmd: "hugo",
+      args: ["server", "--disableFastRender", "--themesDir", path.dirname(resolveBundledHugoRoot())],
+      url: previewSettings.url || "http://localhost:1313"
+    };
   }
 
   return {
@@ -560,6 +574,59 @@ function resolvePreviewInvocation(workspaceDir, previewSettings = {}) {
     command: defaultCommand,
     url: previewSettings.url || "http://localhost:1313"
   };
+}
+
+function createWorkspaceHugoProjection(workspaceDir) {
+  const projectionRoot = path.join(workspaceDir, ".xananode", "preview-hugo");
+  fs.rmSync(projectionRoot, { recursive: true, force: true });
+  fs.mkdirSync(projectionRoot, { recursive: true });
+  fs.mkdirSync(path.join(projectionRoot, "content"), { recursive: true });
+  fs.mkdirSync(path.join(projectionRoot, "static"), { recursive: true });
+  fs.mkdirSync(path.join(projectionRoot, "data"), { recursive: true });
+
+  const workspaceContent = path.join(workspaceDir, "content");
+  if (fs.existsSync(workspaceContent)) {
+    fs.cpSync(workspaceContent, path.join(projectionRoot, "content"), { recursive: true, force: true });
+  }
+
+  const manifest = readPackManifest(workspaceDir);
+  const themeRoot = resolveBundledHugoRoot();
+  const iconSource = path.join(themeRoot, "static", "xananode-icon.svg");
+  if (fs.existsSync(iconSource)) fs.copyFileSync(iconSource, path.join(projectionRoot, "static", "xananode-icon.svg"));
+
+  fs.writeFileSync(path.join(projectionRoot, "hugo.yaml"), [
+    'baseURL: "http://localhost:1313/"',
+    'languageCode: "en-us"',
+    `title: ${JSON.stringify(manifest.name || "XanaNode Studio Preview")}`,
+    'theme: "xananode-hugo"',
+    "",
+    "params:",
+    `  description: ${JSON.stringify(manifest.description || "Studio-generated Hugo projection for a XanaNode substrate.")}`,
+    '  author: "XanaNode Studio"',
+    '  tagline: "Relationships preserve knowledge"',
+    '  themeColor: "#55d6be"',
+    '  image: "xananode-icon.svg"',
+    "  xananode:",
+    `    namespace: ${JSON.stringify(manifest.namespace || manifest.id || "studio.preview")}`,
+    "    brand:",
+    '      name: "XanaNode"',
+    '      tagline: "Relationships preserve knowledge"',
+    '      icon: "xananode-icon.svg"',
+    "",
+    "markup:",
+    "  goldmark:",
+    "    renderer:",
+    "      unsafe: true",
+    "",
+    "outputs:",
+    "  home:",
+    "    - HTML",
+    "    - JSON",
+    ""
+  ].join("\n"));
+
+  mainWindow?.webContents.send("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
+  return projectionRoot;
 }
 
 function uniqueWorkspaceDir(name) {

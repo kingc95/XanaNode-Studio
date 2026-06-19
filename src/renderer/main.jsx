@@ -1072,16 +1072,17 @@ function buildLocalGraph(nodes, current) {
   const currentRef = normalizeNodeRef(current?.id || current?.slug || current?.title || "");
   const rawEdges = [];
   for (const node of graphNodes) {
-    const relationships = Array.isArray(node.relationships) ? node.relationships : [];
-    const sourceRef = normalizeNodeRef(node.id || node.slug || node.title);
+    const relationships = nodeRelationships(node);
     for (const rel of relationships) {
+      const sourceRef = normalizeNodeRef(rel.source || node.protocolId || node.protocol_id || node.id || node.slug || node.title);
       const targetRef = normalizeNodeRef(rel.target || rel.to || rel.node || rel.id);
+      const source = byRef.get(sourceRef);
       const target = byRef.get(targetRef);
-      if (!sourceRef || !targetRef || !target) continue;
+      if (!sourceRef || !targetRef || !source || !target) continue;
       rawEdges.push({
         sourceRef,
         targetRef,
-        source: node,
+        source,
         target,
         type: rel.type || "related_to"
       });
@@ -1163,6 +1164,19 @@ function nodeRefs(node) {
     node?.frontMatter?.id,
     node?.frontMatter?.slug
   ].filter(Boolean).map(normalizeNodeRef);
+}
+
+function nodeRelationships(node) {
+  const candidates = [
+    node?.frontMatter?.relationships,
+    node?.relationships,
+    node?.data?.relationships
+  ];
+  const relationships = candidates.find(Array.isArray) || [];
+  return relationships.map((relationship) => ({
+    ...relationship,
+    target: relationship.target || relationship.to || relationship.node || relationship.id
+  }));
 }
 
 function humanizeRelationship(value) {
