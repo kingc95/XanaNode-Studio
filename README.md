@@ -30,6 +30,7 @@ Hugo also depends on Core directly. That is intentional: people who use the Hugo
   - center: graph projection, Hugo projection, health, and logs
   - right: node editor
 - Open existing workspace
+- Open an existing substrate pack as a local working copy
 - Create new workspace
 - Create nodes
 - Edit node title, type, subtype, facets, summary, and content
@@ -37,6 +38,7 @@ Hugo also depends on Core directly. That is intentional: people who use the Hugo
 - Click two graph nodes to draft a relationship visually
 - Import media/source assets through the Workspace API
 - Build substrate artifacts through Workspace/Core
+- Export portable substrate packs for Hugo or other projection layers
 - Run validation/health checks
 - Save Git snapshots using friendlier language
 - Start/stop local Hugo preview and embed it in the center panel
@@ -80,6 +82,10 @@ npm test
 Studio is not replacing Hugo. Hugo remains the public website projection for now. Studio can run Hugo locally when you want to see that lens, but the graph projection is available without starting Hugo.
 
 Studio is also not trying to make Git the user experience. Git is used underneath as the default versioning layer, but the UI should speak in terms like **Save Snapshot**, **History**, **Publish**, and **Propose Change**.
+
+Studio's **Open Pack** button lets you pick a pack folder, `substrate.json`, or another JSON file inside a pack. Studio creates an editable **working copy** under `Documents/XanaNode Studio Workspaces`.
+
+If the pack came from another author or from the XanaNode Canonical pack, Studio keeps the source node IDs and records the source pack. Your changes are local **proposals** until the source substrate owner accepts them. In Studio language, a **pack** is the portable bundle, a **working copy** is your editable local copy, a **proposal** is an edit against a substrate you do not directly govern, and a **snapshot** is the local save point.
 
 The demo workspace starts with a plain question: **How do you make a campfire?** That small example is there on purpose. It shows that a substrate can start with an everyday inquiry, then grow into claims, evidence, sources, safety gaps, and relationships.
 

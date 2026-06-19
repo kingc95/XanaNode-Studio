@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("xananode", {
   appMetadata: () => ipcRenderer.invoke("app:metadata"),
   openWorkspace: () => ipcRenderer.invoke("dialog:openWorkspace"),
+  openPack: () => ipcRenderer.invoke("dialog:openPack"),
   createWorkspace: (defaults) => ipcRenderer.invoke("dialog:createWorkspace", defaults),
   refreshWorkspace: () => ipcRenderer.invoke("workspace:refresh"),
   workspaceStatus: () => ipcRenderer.invoke("workspace:status"),

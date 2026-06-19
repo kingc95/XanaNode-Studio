@@ -12,9 +12,10 @@ import {
   validateWorkspace,
   computeKnowledgeHealth,
   createNode,
+  importAssetAsNode,
+  openPackAsWorkspace,
   updateNode,
-  workspaceApi,
-  importAssetAsNode
+  workspaceApi
 } from "@xananode/workspace";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -121,6 +122,34 @@ ipcMain.handle("dialog:openWorkspace", async () => {
     if (result.canceled || !result.filePaths[0]) return ok({ canceled: true });
     currentWorkspaceDir = result.filePaths[0];
     const workspace = await openWorkspace(currentWorkspaceDir);
+    return ok({ workspace: normalizeWorkspace(workspace) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("dialog:openPack", async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Open XanaNode Pack",
+      properties: ["openFile", "openDirectory"],
+      filters: [
+        { name: "XanaNode pack JSON", extensions: ["json"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled || !result.filePaths[0]) return ok({ canceled: true });
+    const packSource = result.filePaths[0];
+    const packRoot = fs.existsSync(packSource) && fs.statSync(packSource).isFile()
+      ? path.dirname(packSource)
+      : packSource;
+    const packManifest = readPackManifest(packRoot);
+    const targetDir = uniqueWorkspaceDir(`${packManifest.name || packManifest.id || path.basename(packRoot)} Working Copy`);
+    currentWorkspaceDir = targetDir;
+    const workspace = await openPackAsWorkspace(packSource, targetDir, {
+      name: `${packManifest.name || "XanaNode Pack"} Working Copy`,
+      git: true
+    });
     return ok({ workspace: normalizeWorkspace(workspace) });
   } catch (error) {
     return fail(error);
@@ -544,6 +573,21 @@ function uniqueWorkspaceDir(name) {
     index += 1;
   }
   return candidate;
+}
+
+function readPackManifest(packRoot) {
+  const candidates = [
+    path.join(packRoot, "substrate.json"),
+    path.join(packRoot, "pack.json")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 function slugFolderName(value) {

@@ -178,6 +178,16 @@ function App() {
     }
   }
 
+  async function openPack() {
+    const result = await run(() => api.openPack(), "Opened pack working copy");
+    if (result?.workspace) {
+      setStatus(null);
+      setSelectedNode(result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setCenterMode("graph");
+    }
+  }
+
   async function createWorkspace(defaults = {}) {
     const result = await run(
       () => api.createWorkspace({
@@ -396,6 +406,7 @@ function App() {
         <div className="top-actions">
           <button onClick={() => setSetupOpen(true)}>New</button>
           <button onClick={openWorkspace}>Open</button>
+          <button onClick={openPack}>Open Pack</button>
           <button disabled={!workspace} onClick={refreshStatus}>Health</button>
           <button disabled={!workspace} onClick={() => run(() => api.build(), "Built artifacts")}>Build</button>
           <button disabled={!workspace} onClick={() => run(() => api.exportPack(), "Exported pack")}>Export Pack</button>
@@ -434,10 +445,16 @@ function App() {
                   You are viewing canonical XanaNode material. Explore freely; edits here become your own proposal until they are accepted back into the canon.
                 </div>
               )}
+              {isWorkingCopyWorkspace(workspace) && (
+                <div className="working-copy-warning">
+                  Working copy from {workspace.settings?.source_pack?.name || workspace.settings?.source_pack?.id || "an imported pack"}. Your changes are local proposals until the source owner accepts them.
+                </div>
+              )}
               <div className="pill-row">
                 <span className="pill">{nodes.length} nodes</span>
                 <span className="pill">{workspace.imports?.imports?.length || workspace.imports?.length || 0} imports</span>
                 <span className="pill">Git {workspace.git?.enabled ? "on" : "off"}</span>
+                {isWorkingCopyWorkspace(workspace) && <span className="pill">working copy</span>}
               </div>
             </section>
 
@@ -802,6 +819,25 @@ function FieldLabel({ children, helpTitle, help, href }) {
   );
 }
 
+function SelectorChips({ values, selected, emptyLabel, onToggle }) {
+  const selectedSet = new Set(selected || []);
+  if (!values?.length) return <div className="selector-empty">{emptyLabel}</div>;
+  return (
+    <div className="selector-chips">
+      {values.map((value) => (
+        <button
+          type="button"
+          key={value}
+          className={`selector-chip ${selectedSet.has(value) ? "selected" : ""}`}
+          onClick={() => onToggle(value)}
+        >
+          {value}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, startRelationshipLink, saveNode }) {
   const [relationshipType, setRelationshipType] = useState("related_to");
   const [relationshipCategory, setRelationshipCategory] = useState("all");
@@ -842,6 +878,14 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
     updateFrontMatter(key, value.split(",").map((item) => item.trim()).filter(Boolean));
   }
 
+  function toggleListFrontMatter(key, value) {
+    const current = Array.isArray(frontMatter[key]) ? frontMatter[key] : [];
+    const next = current.includes(value)
+      ? current.filter((item) => item !== value)
+      : [...current, value];
+    updateFrontMatter(key, next);
+  }
+
   return (
     <div className="editor-panel">
       <div className="panel-row sticky-editor-head">
@@ -871,17 +915,19 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
       </select>
 
       <FieldLabel help="Use additional subtypes when the node legitimately wears more than one narrower role. This is not a replacement for relationships." href={canonicalHelpUrl("property", "subtypes")}>Additional subtypes</FieldLabel>
-      <input
-        value={(frontMatter.subtypes || []).join(", ")}
-        onChange={(e) => updateListFrontMatter("subtypes", e.target.value)}
-        placeholder={allowedSubtypes.slice(0, 3).join(", ")}
+      <SelectorChips
+        values={allowedSubtypes}
+        selected={frontMatter.subtypes || []}
+        emptyLabel={allowedSubtypes.length ? "Choose any additional subtypes" : "No protocol subtypes for this type yet"}
+        onToggle={(value) => toggleListFrontMatter("subtypes", value)}
       />
 
       <FieldLabel help="Facets are secondary lenses for filtering and authoring. They help say, for example, that a quote can behave like evidence, a claim, and a source fragment." href={canonicalHelpUrl("property", "facets")}>Facets</FieldLabel>
-      <input
-        value={(frontMatter.facets || []).join(", ")}
-        onChange={(e) => updateListFrontMatter("facets", e.target.value)}
-        placeholder="source, claim, fragment"
+      <SelectorChips
+        values={NODE_TYPES}
+        selected={frontMatter.facets || []}
+        emptyLabel="Choose secondary node roles"
+        onToggle={(value) => toggleListFrontMatter("facets", value)}
       />
 
       <FieldLabel help="A short human sentence that tells readers why this node exists. If the graph only showed this line, it should still make sense." href={canonicalHelpUrl("property", "summary")}>Summary</FieldLabel>
@@ -1003,6 +1049,10 @@ function isCanonicalWorkspace(workspace) {
     workspace?.rootDir
   ].filter(Boolean).join(" ").toLowerCase();
   return text.includes("xananode.canonical") || text.includes("canonical xananode") || text.includes("xananode canonical");
+}
+
+function isWorkingCopyWorkspace(workspace) {
+  return workspace?.settings?.mode === "working_copy" || Boolean(workspace?.manifest?.source_pack);
 }
 
 function relationshipLabel(type) {
@@ -1232,6 +1282,7 @@ function createUnavailableApi() {
   return {
     appMetadata: unavailable,
     openWorkspace: unavailable,
+    openPack: unavailable,
     createWorkspace: unavailable,
     refreshWorkspace: unavailable,
     workspaceStatus: unavailable,

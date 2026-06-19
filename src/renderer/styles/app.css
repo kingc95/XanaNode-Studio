@@ -137,10 +137,10 @@ label {
 }
 
 .help-popover {
-  position: absolute;
-  right: 0;
-  top: 1.5rem;
-  z-index: 20;
+  position: fixed;
+  right: 1rem;
+  top: 4.5rem;
+  z-index: 200;
   width: min(320px, calc(100vw - 2rem));
   padding: 0.75rem;
   border: 1px solid var(--xana-accent-border);
@@ -343,7 +343,8 @@ pre {
   margin: 0.65rem 0;
 }
 
-.canon-warning {
+.canon-warning,
+.working-copy-warning {
   margin: 0.55rem 0;
   padding: 0.58rem 0.65rem;
   border: 1px solid rgba(255, 209, 102, 0.35);
@@ -352,6 +353,12 @@ pre {
   background: rgba(255, 209, 102, 0.08);
   font-size: 0.8rem;
   line-height: 1.45;
+}
+
+.working-copy-warning {
+  border-color: rgba(85, 214, 190, 0.32);
+  color: #b8fff0;
+  background: rgba(85, 214, 190, 0.08);
 }
 
 .pill-row {
@@ -753,6 +760,40 @@ summary {
   color: var(--xana-text-muted);
   font-size: 0.78rem;
   line-height: 1.45;
+}
+
+.selector-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.36rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.72rem;
+  background: rgba(5, 7, 10, 0.62);
+  max-height: 150px;
+  overflow: auto;
+}
+
+.selector-chip {
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0.22rem 0.56rem;
+  font-size: 0.76rem;
+}
+
+.selector-chip.selected {
+  border-color: var(--xana-accent);
+  background: rgba(85, 214, 190, 0.18);
+  color: #b8fff0;
+}
+
+.selector-empty {
+  padding: 0.68rem;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 0.72rem;
+  color: var(--xana-text-muted);
+  background: rgba(5, 7, 10, 0.45);
+  font-size: 0.82rem;
 }
 
 .editor-section {
