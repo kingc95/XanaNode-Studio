@@ -1,38 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import nodeTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
+import relationshipTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
 import "./styles/app.css";
 
-const NODE_TYPES = [
-  "person",
-  "concept",
-  "claim",
-  "source",
-  "essay",
-  "observation",
-  "media",
-  "event",
-  "place",
-  "organization",
-  "project",
-  "technology",
-  "publication",
-  "community",
-  "relationship",
-  "revision",
-  "trail",
-  "schema",
-  "fragment"
-];
-const RELATIONSHIP_HINTS = {
-  claim: ["supports", "contradicts", "has_evidence", "evidence_for", "derived_from", "cites"],
-  source: ["supports", "derived_from", "cites", "contains", "documents", "transcludes"],
-  concept: ["related_to", "broader_than", "narrower_than", "explains", "derived_from"],
-  publication: ["contains", "authored", "created_by", "cites", "derived_from"],
-  event: ["occurred_at", "had_participant", "featured_speaker", "introduced", "context_for"],
-  trail: ["starts_with", "continues_to", "arrives_at", "is_start_of"],
-  media: ["depicts", "documents", "created_by", "derived_from", "primary_media_of"],
-  project: ["implements", "uses", "depends_on", "documents", "extends"]
-};
+const NODE_TYPE_DEFINITIONS = [...nodeTypeRegistry.node_types].sort((a, b) => a.label.localeCompare(b.label));
+const NODE_TYPES = NODE_TYPE_DEFINITIONS.map((definition) => definition.type);
+const NODE_TYPES_BY_TYPE = Object.fromEntries(NODE_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
+const RELATIONSHIP_TYPE_DEFINITIONS = [...relationshipTypeRegistry.relationship_types].sort((a, b) => {
+  const categoryCompare = a.category.localeCompare(b.category);
+  return categoryCompare || a.label.localeCompare(b.label);
+});
+const RELATIONSHIP_TYPES_BY_TYPE = Object.fromEntries(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
+const RELATIONSHIP_CATEGORIES = [...new Set(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => definition.category))].sort();
 
 function App() {
   const [workspace, setWorkspace] = useState(null);
@@ -369,6 +349,8 @@ function App() {
                 <div className="panel-title">Catalog</div>
                 <select value={catalogMode} onChange={(e) => setCatalogMode(e.target.value)}>
                   <option value="type">Type</option>
+                  <option value="subtype">Subtype</option>
+                  <option value="facet">Facet</option>
                   <option value="status">Status</option>
                   <option value="author">Author</option>
                 </select>
@@ -634,6 +616,7 @@ function LogView({ logs }) {
 
 function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, saveNode }) {
   const [relationshipType, setRelationshipType] = useState("related_to");
+  const [relationshipCategory, setRelationshipCategory] = useState("all");
   const [relationshipTarget, setRelationshipTarget] = useState("");
 
   if (!draft) {
@@ -648,10 +631,19 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
   const frontMatter = draft.frontMatter || extractFrontMatterShape(draft);
   const type = frontMatter.type || draft.type || "concept";
   const relationships = Array.isArray(frontMatter.relationships) ? frontMatter.relationships : [];
-  const relationshipHints = RELATIONSHIP_HINTS[type] || ["related_to", "derived_from", "supports", "contradicts"];
+  const typeDefinition = NODE_TYPES_BY_TYPE[type] || null;
+  const allowedSubtypes = typeDefinition?.allowed_subtypes || [];
+  const filteredRelationshipDefinitions = relationshipCategory === "all"
+    ? RELATIONSHIP_TYPE_DEFINITIONS
+    : RELATIONSHIP_TYPE_DEFINITIONS.filter((definition) => definition.category === relationshipCategory);
+  const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
 
   function updateFrontMatter(key, value) {
     setDraft({ ...draft, frontMatter: { ...frontMatter, [key]: value } });
+  }
+
+  function updateListFrontMatter(key, value) {
+    updateFrontMatter(key, value.split(",").map((item) => item.trim()).filter(Boolean));
   }
 
   return (
@@ -669,8 +661,32 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
 
       <label>Type</label>
       <select value={type} onChange={(e) => updateFrontMatter("type", e.target.value)}>
-        {NODE_TYPES.map((nodeType) => <option key={nodeType}>{nodeType}</option>)}
+        {NODE_TYPE_DEFINITIONS.map((nodeType) => (
+          <option value={nodeType.type} key={nodeType.type}>{nodeType.label} ({nodeType.type})</option>
+        ))}
       </select>
+      {typeDefinition?.purpose && <p className="field-help">{typeDefinition.purpose}</p>}
+
+      <label>Subtype</label>
+      <select value={frontMatter.subtype || ""} onChange={(e) => updateFrontMatter("subtype", e.target.value || undefined)}>
+        <option value="">No subtype</option>
+        {allowedSubtypes.map((subtype) => <option value={subtype} key={subtype}>{subtype}</option>)}
+        {frontMatter.subtype && !allowedSubtypes.includes(frontMatter.subtype) && <option value={frontMatter.subtype}>{frontMatter.subtype}</option>}
+      </select>
+
+      <label>Additional subtypes</label>
+      <input
+        value={(frontMatter.subtypes || []).join(", ")}
+        onChange={(e) => updateListFrontMatter("subtypes", e.target.value)}
+        placeholder={allowedSubtypes.slice(0, 3).join(", ")}
+      />
+
+      <label>Facets</label>
+      <input
+        value={(frontMatter.facets || []).join(", ")}
+        onChange={(e) => updateListFrontMatter("facets", e.target.value)}
+        placeholder="source, claim, fragment"
+      />
 
       <label>Summary</label>
       <textarea rows={3} value={frontMatter.summary || ""} onChange={(e) => updateFrontMatter("summary", e.target.value)} />
@@ -681,8 +697,23 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
       <section className="editor-section">
         <div className="panel-title">Relationships</div>
         <div className="relationship-form">
+          <select value={relationshipCategory} onChange={(e) => {
+            const nextCategory = e.target.value;
+            setRelationshipCategory(nextCategory);
+            const nextDefinition = nextCategory === "all"
+              ? RELATIONSHIP_TYPE_DEFINITIONS[0]
+              : RELATIONSHIP_TYPE_DEFINITIONS.find((definition) => definition.category === nextCategory);
+            if (nextDefinition && nextCategory !== "all" && RELATIONSHIP_TYPES_BY_TYPE[relationshipType]?.category !== nextCategory) {
+              setRelationshipType(nextDefinition.type);
+            }
+          }}>
+            <option value="all">All categories</option>
+            {RELATIONSHIP_CATEGORIES.map((category) => <option value={category} key={category}>{category}</option>)}
+          </select>
           <select value={relationshipType} onChange={(e) => setRelationshipType(e.target.value)}>
-            {[...new Set([relationshipType, ...relationshipHints])].map((type) => <option key={type}>{type}</option>)}
+            {filteredRelationshipDefinitions.map((definition) => (
+              <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
+            ))}
           </select>
           <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
             <option value="">Choose target</option>
@@ -693,8 +724,19 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sav
             setRelationshipTarget("");
           }}>Add</button>
         </div>
+        {selectedRelationshipDefinition && (
+          <div className="relationship-definition">
+            <span className="pill">{selectedRelationshipDefinition.category}</span>
+            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
+            <p>{selectedRelationshipDefinition.meaning}</p>
+          </div>
+        )}
         {relationships.length ? relationships.map((rel, i) => (
-          <div className="relationship-chip" key={i}>{rel.type || "related_to"} {"->"} {rel.target || rel.to || "unknown"}</div>
+          <div className="relationship-chip" key={i}>
+            <strong>{relationshipLabel(rel.type)}</strong>
+            <span>{" -> "} {rel.target || rel.to || "unknown"}</span>
+            {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && <small> inverse: {RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse}</small>}
+          </div>
         )) : <p className="muted">No relationships yet.</p>}
       </section>
 
@@ -712,12 +754,19 @@ function groupNodes(nodes, mode) {
   const groups = {};
   for (const node of nodes) {
     let key = node.type || "node";
+    if (mode === "subtype") key = node.subtype || node.subtypes?.[0] || "no subtype";
+    if (mode === "facet") key = node.facets?.[0] || "no facet";
     if (mode === "author") key = node.created_by || node.author || "unknown author";
     if (mode === "status") key = node.status || "draft/unknown";
     if (!groups[key]) groups[key] = [];
     groups[key].push(node);
   }
   return Object.fromEntries(Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function relationshipLabel(type) {
+  const definition = RELATIONSHIP_TYPES_BY_TYPE[type];
+  return definition ? `${definition.label} (${definition.type})` : type || "related_to";
 }
 
 function buildLocalGraph(nodes, current) {

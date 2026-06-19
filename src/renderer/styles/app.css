@@ -600,6 +600,13 @@ summary {
   font-size: 0.92rem;
 }
 
+.field-help {
+  margin: 0.4rem 0 0;
+  color: var(--xana-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .editor-section {
   border-top: 1px solid var(--xana-panel-border);
   margin-top: 1rem;
@@ -608,7 +615,7 @@ summary {
 
 .relationship-form {
   display: grid;
-  grid-template-columns: 1fr 1.4fr auto;
+  grid-template-columns: 1fr 1.2fr 1.3fr auto;
   gap: 0.4rem;
 }
 
@@ -624,6 +631,27 @@ summary {
   padding: 0.45rem 0.55rem;
   margin: 0.35rem 0;
   color: #cbd5e1;
+}
+
+.relationship-chip small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--xana-text-muted);
+}
+
+.relationship-definition {
+  margin-top: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid var(--xana-panel-border);
+  border-radius: 8px;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 0.82rem;
+}
+
+.relationship-definition p {
+  margin: 0.5rem 0 0;
+  line-height: 1.45;
 }
 
 .suggestion {
