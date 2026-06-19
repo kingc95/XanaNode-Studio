@@ -178,6 +178,13 @@ pre {
   opacity: 0.85;
 }
 
+.brand-build {
+  color: var(--xana-text-muted);
+  font-size: 0.56rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
 .top-actions {
   display: flex;
   gap: 0.42rem;

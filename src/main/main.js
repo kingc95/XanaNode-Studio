@@ -18,10 +18,16 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const appRoot = path.resolve(__dirname, "../..");
+const protocolIconPath = path.join(appRoot, "vendor", "xananode-workspace-repo", "vendor", "xananode-core", "vendor", "xananode-protocol", "media", "images", "xananode-icon.svg");
+const appMetadata = readAppMetadata();
 
 let mainWindow = null;
 let currentWorkspaceDir = null;
 let hugoProcess = null;
+
+app.setName("XanaNode Studio");
+if (process.platform === "win32") app.setAppUserModelId("com.xananode.studio");
 
 function rendererUrl() {
   if (process.env.VITE_DEV_SERVER_URL) return process.env.VITE_DEV_SERVER_URL;
@@ -29,12 +35,14 @@ function rendererUrl() {
 }
 
 function createWindow() {
+  const title = `${appMetadata.product_name || "XanaNode Studio"} ${appMetadata.version ? `v${appMetadata.version}` : ""}`.trim();
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
     minWidth: 1100,
     minHeight: 720,
-    title: "XanaNode Studio",
+    title,
+    icon: protocolIconPath,
     backgroundColor: "#0f1117",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
@@ -45,6 +53,24 @@ function createWindow() {
     }
   });
   mainWindow.loadURL(rendererUrl());
+}
+
+function readAppMetadata() {
+  const fallback = {
+    product_name: "XanaNode Studio",
+    version: "0.1.0",
+    built_at: "",
+    git_commit: "",
+    repository: "kingc95/XanaNode-Studio"
+  };
+  try {
+    return {
+      ...fallback,
+      ...JSON.parse(fs.readFileSync(path.join(appRoot, "src", "generated", "build-metadata.json"), "utf8"))
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 app.whenReady().then(() => {
@@ -225,6 +251,8 @@ ipcMain.handle("workspace:openInShell", async (_, targetPath) => {
     return fail(error);
   }
 });
+
+ipcMain.handle("app:metadata", async () => ok({ metadata: appMetadata }));
 
 ipcMain.handle("preview:startHugo", async () => {
   try {

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import nodeTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
 import relationshipTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
 import xananodeIconUrl from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
+import buildMetadata from "../generated/build-metadata.json";
 import "./styles/app.css";
 
 const NODE_TYPE_DEFINITIONS = [...nodeTypeRegistry.node_types].sort((a, b) => a.label.localeCompare(b.label));
@@ -27,11 +28,15 @@ function App() {
   const [previewLogs, setPreviewLogs] = useState([]);
   const [centerMode, setCenterMode] = useState("graph");
   const [catalogMode, setCatalogMode] = useState("type");
+  const [appMetadata, setAppMetadata] = useState(buildMetadata);
   const api = window.xananode || createUnavailableApi();
   const previewFrameRef = useRef(null);
   const lastPreviewNodeRef = useRef("");
 
   useEffect(() => {
+    api.appMetadata?.().then((result) => {
+      if (result?.ok && result.metadata) setAppMetadata(result.metadata);
+    });
     const offLog = api.onPreviewLog?.((message) => {
       setPreviewLogs((logs) => [...logs.slice(-80), message]);
     });
@@ -301,6 +306,7 @@ function App() {
           <div>
             <div className="brand-title">XanaNode Studio</div>
             <div className="brand-subtitle">Local-first substrate workbench</div>
+            <div className="brand-build">{formatBuildLabel(appMetadata)}</div>
           </div>
         </div>
         <div className="top-actions">
@@ -975,12 +981,22 @@ function formatIssue(issue) {
   return issue.message || issue.summary || JSON.stringify(issue);
 }
 
+function formatBuildLabel(metadata = {}) {
+  const version = metadata.version ? `v${metadata.version}` : "unversioned";
+  const commit = metadata.git_commit ? metadata.git_commit.slice(0, 7) : "";
+  const built = metadata.built_at && metadata.built_at !== "1970-01-01T00:00:00.000Z"
+    ? new Date(metadata.built_at).toLocaleDateString()
+    : "";
+  return [version, commit, built].filter(Boolean).join(" · ");
+}
+
 function createUnavailableApi() {
   const unavailable = async () => ({
     ok: false,
     error: "Desktop workspace actions are available in the Electron app."
   });
   return {
+    appMetadata: unavailable,
     openWorkspace: unavailable,
     createWorkspace: unavailable,
     refreshWorkspace: unavailable,
