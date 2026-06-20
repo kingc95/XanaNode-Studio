@@ -57,6 +57,13 @@ function createWindow() {
   mainWindow.loadURL(rendererUrl());
 }
 
+function sendToRenderer(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const { webContents } = mainWindow;
+  if (!webContents || webContents.isDestroyed()) return;
+  webContents.send(channel, payload);
+}
+
 function readAppMetadata() {
   const fallback = {
     product_name: "XanaNode Studio",
@@ -294,26 +301,31 @@ ipcMain.handle("workspace:openInShell", async (_, targetPath) => {
 
 ipcMain.handle("app:metadata", async () => ok({ metadata: appMetadata }));
 
-ipcMain.handle("preview:startHugo", async () => {
+ipcMain.handle("preview:startHugo", async () => startHugoPreview());
+
+ipcMain.handle("preview:rebuildHugo", async () => startHugoPreview({ rebuild: true }));
+
+async function startHugoPreview({ rebuild = false } = {}) {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const ws = await openWorkspace(currentWorkspaceDir);
     const preview = resolvePreviewInvocation(currentWorkspaceDir, ws.settings?.preview);
+    sendToRenderer("preview:log", `${rebuild ? "Rebuilding" : "Starting"} Hugo projection...\n`);
     stopHugoPreview();
     await preparePreviewArtifacts(preview.cwd);
     const invocation = await resolveHugoServerInvocation(preview);
     hugoProcess = spawn(invocation.cmd, invocation.args, { cwd: preview.cwd, shell: false });
-    hugoProcess.stdout.on("data", (data) => mainWindow?.webContents.send("preview:log", data.toString()));
-    hugoProcess.stderr.on("data", (data) => mainWindow?.webContents.send("preview:log", data.toString()));
+    hugoProcess.stdout.on("data", (data) => sendToRenderer("preview:log", data.toString()));
+    hugoProcess.stderr.on("data", (data) => sendToRenderer("preview:log", data.toString()));
     hugoProcess.on("exit", (code) => {
-      mainWindow?.webContents.send("preview:stopped", { code });
+      sendToRenderer("preview:stopped", { code });
       hugoProcess = null;
     });
     return ok({ url: invocation.url });
   } catch (error) {
     return fail(error);
   }
-});
+}
 
 ipcMain.handle("preview:stopHugo", async () => {
   stopHugoPreview();
@@ -344,8 +356,8 @@ async function runPreviewPreparation(siteRoot) {
       cwd: siteRoot,
       shell: false
     });
-    child.stdout.on("data", (data) => mainWindow?.webContents.send("preview:log", data.toString()));
-    child.stderr.on("data", (data) => mainWindow?.webContents.send("preview:log", data.toString()));
+    child.stdout.on("data", (data) => sendToRenderer("preview:log", data.toString()));
+    child.stderr.on("data", (data) => sendToRenderer("preview:log", data.toString()));
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
@@ -412,7 +424,7 @@ async function preparePreviewArtifacts(siteRoot) {
     await runPreviewPreparation(siteRoot);
     return;
   } catch (error) {
-    mainWindow?.webContents.send("preview:log", `Hugo prepare script failed, falling back to Core build: ${error.message}\n`);
+    sendToRenderer("preview:log", `Hugo prepare script failed, falling back to Core build: ${error.message}\n`);
   }
 
   const outputDir = path.join(siteRoot, "static");
@@ -439,7 +451,7 @@ function syncPreviewThemeBridge(siteRoot) {
   }
 
   if (copied) {
-    mainWindow?.webContents.send("preview:log", `Synced XanaNode Hugo preview bridge files (${copied}).\n`);
+    sendToRenderer("preview:log", `Synced XanaNode Hugo preview bridge files (${copied}).\n`);
   }
 }
 
@@ -625,7 +637,7 @@ function createWorkspaceHugoProjection(workspaceDir) {
     ""
   ].join("\n"));
 
-  mainWindow?.webContents.send("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
+  sendToRenderer("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
   return projectionRoot;
 }
 

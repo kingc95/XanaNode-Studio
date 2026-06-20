@@ -305,7 +305,15 @@ function App() {
   async function startPreview() {
     const result = await run(() => api.startHugoPreview(), "Started Hugo preview");
     if (result?.url) {
-      setPreviewUrl(result.url);
+      setPreviewUrl(bustPreviewUrl(result.url));
+      setCenterMode("preview");
+    }
+  }
+
+  async function rebuildPreview() {
+    const result = await run(() => api.rebuildHugoPreview(), "Rebuilt Hugo preview");
+    if (result?.url) {
+      setPreviewUrl(bustPreviewUrl(result.url));
       setCenterMode("preview");
     }
   }
@@ -424,6 +432,7 @@ function App() {
           <button disabled={!workspace} onClick={() => run(() => api.build(), "Built artifacts")}>Build</button>
           <button disabled={!workspace} onClick={() => run(() => api.exportPack(), "Exported pack")}>Export Pack</button>
           <button disabled={!workspace} onClick={startPreview}>Preview</button>
+          <button disabled={!workspace} onClick={rebuildPreview}>Rebuild Hugo</button>
           <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
         </div>
       </header>
@@ -1392,6 +1401,17 @@ function formatBuildLabel(metadata = {}) {
   return [version, commit, built].filter(Boolean).join(" · ");
 }
 
+function bustPreviewUrl(value) {
+  try {
+    const url = new URL(value);
+    url.searchParams.set("studio_refresh", String(Date.now()));
+    return url.toString();
+  } catch (_) {
+    const separator = String(value || "").includes("?") ? "&" : "?";
+    return `${value}${separator}studio_refresh=${Date.now()}`;
+  }
+}
+
 function createUnavailableApi() {
   const unavailable = async () => ({
     ok: false,
@@ -1413,6 +1433,7 @@ function createUnavailableApi() {
     validate: unavailable,
     openInShell: unavailable,
     startHugoPreview: unavailable,
+    rebuildHugoPreview: unavailable,
     stopHugoPreview: unavailable,
     readTextFile: unavailable,
     onPreviewLog: () => {},

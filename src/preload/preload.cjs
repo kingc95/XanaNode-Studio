@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("xananode", {
   validate: () => ipcRenderer.invoke("workspace:validate"),
   openInShell: (targetPath) => ipcRenderer.invoke("workspace:openInShell", targetPath),
   startHugoPreview: () => ipcRenderer.invoke("preview:startHugo"),
+  rebuildHugoPreview: () => ipcRenderer.invoke("preview:rebuildHugo"),
   stopHugoPreview: () => ipcRenderer.invoke("preview:stopHugo"),
   readTextFile: (absolutePath) => ipcRenderer.invoke("file:readText", absolutePath),
   onPreviewLog: (callback) => {
