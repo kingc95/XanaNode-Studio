@@ -858,6 +858,33 @@ summary {
   color: #cbd5e1;
 }
 
+.relationship-chip-main,
+.relationship-chip-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.relationship-chip-main select {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.relationship-chip-actions {
+  margin-top: 0.45rem;
+}
+
+.relationship-chip-actions button {
+  padding: 0.45rem 0.65rem;
+  min-height: 0;
+}
+
+.relationship-chip-actions .danger {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
+}
+
 .relationship-chip small {
   display: block;
   margin-top: 0.25rem;

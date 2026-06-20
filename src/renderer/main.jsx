@@ -930,6 +930,17 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
     updateFrontMatter(key, next);
   }
 
+  function updateRelationship(index, patch) {
+    const next = relationships.map((relationship, relationshipIndex) => (
+      relationshipIndex === index ? { ...relationship, ...patch } : relationship
+    ));
+    updateFrontMatter("relationships", next);
+  }
+
+  function removeRelationship(index) {
+    updateFrontMatter("relationships", relationships.filter((_, relationshipIndex) => relationshipIndex !== index));
+  }
+
   return (
     <div className="editor-panel">
       <div className="panel-row sticky-editor-head">
@@ -1042,9 +1053,27 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
         </div>
         {relationships.length ? relationships.map((rel, i) => (
           <div className="relationship-chip" key={i}>
-            <strong>{relationshipLabel(rel.type)}</strong>
-            <span>{" -> "} {rel.target || rel.to || "unknown"}</span>
-            {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && <small> inverse: {RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse}</small>}
+            <div className="relationship-chip-main">
+              <select
+                value={rel.type || "related_to"}
+                onChange={(event) => updateRelationship(i, { type: event.target.value })}
+                aria-label="Relationship type"
+              >
+                {RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => (
+                  <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
+                ))}
+              </select>
+              <span>{" -> "} {rel.target || rel.to || "unknown"}</span>
+            </div>
+            <div className="relationship-chip-actions">
+              {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && (
+                <button type="button" onClick={() => updateRelationship(i, { type: RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse })}>
+                  Use inverse
+                </button>
+              )}
+              <button type="button" className="danger" onClick={() => removeRelationship(i)}>Remove</button>
+            </div>
+            {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && <small>Inverse type: {RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse}</small>}
           </div>
         )) : <p className="muted">No relationships yet.</p>}
       </section>
