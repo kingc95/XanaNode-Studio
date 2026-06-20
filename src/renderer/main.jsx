@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import nodeTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
 import relationshipTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
 import xananodeIconUrl from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
+import { buildGraphProjection, createProjectionRegistry, projectionEdgePath, relationshipsFromProjectionNodes } from "../../vendor/xananode-workspace-repo/vendor/xananode-core/src/projection.js";
 import buildMetadata from "../generated/build-metadata.json";
 import "./styles/app.css";
 
@@ -15,6 +16,10 @@ const RELATIONSHIP_TYPE_DEFINITIONS = [...relationshipTypeRegistry.relationship_
 });
 const RELATIONSHIP_TYPES_BY_TYPE = Object.fromEntries(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
 const RELATIONSHIP_CATEGORIES = [...new Set(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => definition.category))].sort();
+const GRAPH_PROJECTION_REGISTRY = createProjectionRegistry({
+  nodeTypes: nodeTypeRegistry.node_types,
+  relationshipTypes: relationshipTypeRegistry.relationship_types
+});
 
 function App() {
   const [workspace, setWorkspace] = useState(null);
@@ -739,11 +744,11 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
               markerHeight="5"
               orient="auto-start-reverse"
             >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={relationshipColor(edge.type)} />
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={edge.style.color} />
             </marker>
           ))}
           {graph.nodes.map((node) => {
-            const colors = nodeTypeFills(node.source);
+            const colors = node.style.fills;
             if (colors.length < 2) return null;
             return (
               <linearGradient id={nodeGradientId(node)} key={node.key} x1="0%" y1="0%" x2="100%" y2="100%">
@@ -758,10 +763,10 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
           <g key={edge.key}>
             <path
               className="edge"
-              d={edgePath(edge)}
-              stroke={relationshipColor(edge.type)}
-              strokeDasharray={relationshipDash(edge.type)}
-              strokeWidth={relationshipStrokeWidth(edge.type)}
+              d={projectionEdgePath(edge)}
+              stroke={edge.style.color}
+              strokeDasharray={edge.style.dash}
+              strokeWidth={edge.style.strokeWidth}
               markerEnd={`url(#${edgeMarkerId(edge)})`}
             />
             <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
@@ -779,10 +784,10 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
             <circle
               r={node.selected ? 46 : 32}
               fill={nodeFill(node)}
-              stroke={nodeStroke(node.source)}
+              stroke={node.style.outline}
             />
-            <text textAnchor="middle" y="-3" fill={nodeTextColor(node.source)}>{trimLabel(node.title, node.selected ? 24 : 16)}</text>
-            <text className="graph-type" textAnchor="middle" y="15" fill={nodeTextColor(node.source)}>{node.type || "node"}</text>
+            <text textAnchor="middle" y="-3" fill={node.style.text}>{trimLabel(node.title, node.selected ? 24 : 16)}</text>
+            <text className="graph-type" textAnchor="middle" y="15" fill={node.style.text}>{node.type || "node"}</text>
           </g>
         ))}
       </svg>
@@ -1143,225 +1148,20 @@ function relationshipLabel(type) {
 }
 
 function buildLocalGraph(nodes, current) {
-  const graphNodes = current && !nodes.some((node) => nodeKey(node) === nodeKey(current))
-    ? [current, ...nodes]
-    : nodes;
-  const byRef = new Map();
-  for (const node of graphNodes) {
-    for (const ref of nodeRefs(node)) byRef.set(ref, node);
-  }
-
-  const currentRef = primaryNodeRef(current);
-  const rawEdges = [];
-  for (const node of graphNodes) {
-    const relationships = nodeRelationships(node);
-    for (const rel of relationships) {
-      const sourceRef = normalizeNodeRef(rel.source || node.protocolId || node.protocol_id || node.id || node.slug || node.title);
-      const targetRef = normalizeNodeRef(rel.target || rel.to || rel.node || rel.id);
-      const source = byRef.get(sourceRef);
-      const target = byRef.get(targetRef);
-      if (!sourceRef || !targetRef || !source || !target) continue;
-      rawEdges.push({
-        sourceRef,
-        targetRef,
-        source,
-        target,
-        type: rel.type || "related_to"
-      });
-    }
-  }
-
-  const visibleRefs = new Set();
-  if (currentRef) visibleRefs.add(currentRef);
-  for (const edge of rawEdges) {
-    if (edge.sourceRef === currentRef) visibleRefs.add(edge.targetRef);
-    if (edge.targetRef === currentRef) visibleRefs.add(edge.sourceRef);
-  }
-
-  const hasCurrentEdges = rawEdges.some((edge) => edge.sourceRef === currentRef || edge.targetRef === currentRef);
-  const useOverviewLayout = !currentRef || !hasCurrentEdges;
-  let visibleNodes = [...visibleRefs]
-    .map((ref) => byRef.get(ref))
-    .filter(Boolean);
-  if (useOverviewLayout) {
-    visibleNodes = graphNodes.slice(0, 18);
-  } else if (visibleNodes.length < Math.min(graphNodes.length, 8)) {
-    const existing = new Set(visibleNodes.map((node) => nodeKey(node)));
-    for (const node of graphNodes) {
-      if (visibleNodes.length >= 8) break;
-      if (!existing.has(nodeKey(node))) visibleNodes.push(node);
-    }
-  }
-  visibleNodes = visibleNodes.slice(0, 18);
-
-  const centerX = 450;
-  const centerY = 310;
-  const radius = visibleNodes.length > 10 ? 245 : 205;
-  const selectedIndex = Math.max(0, visibleNodes.findIndex((node) => nodeRefs(node).some((ref) => normalizeNodeRef(ref) === currentRef)));
-  const arranged = useOverviewLayout
-    ? arrangeOverviewNodes(visibleNodes, selectedIndex)
-    : visibleNodes.map((node, index) => {
-    const selected = index === selectedIndex;
-    if (selected) return { key: nodeKey(node), source: node, title: node.title || node.id || "Untitled", type: node.type, selected: true, x: centerX, y: centerY };
-    const orbitIndex = index > selectedIndex ? index - 1 : index;
-    const orbitCount = Math.max(1, visibleNodes.length - 1);
-    const angle = (Math.PI * 2 * orbitIndex) / orbitCount - Math.PI / 2;
-    return {
-      key: nodeKey(node),
-      source: node,
-      title: node.title || node.id || "Untitled",
-      type: node.type,
-      selected: false,
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius
-    };
+  return buildGraphProjection(nodes, relationshipsFromProjectionNodes(nodes), {
+    current,
+    registry: GRAPH_PROJECTION_REGISTRY
   });
-
-  const arrangedByRef = new Map();
-  for (const node of arranged) {
-    for (const ref of nodeRefs(node.source)) arrangedByRef.set(ref, node);
-  }
-
-  const edges = rawEdges
-    .map((edge, index) => ({
-      key: `${edge.sourceRef}-${edge.type}-${edge.targetRef}-${index}`,
-      source: arrangedByRef.get(edge.sourceRef),
-      target: arrangedByRef.get(edge.targetRef),
-      type: edge.type
-    }))
-    .filter((edge) => edge.source && edge.target && edge.source.key !== edge.target.key)
-    .slice(0, 40);
-
-  return { nodes: arranged, edges, hasVisibleEdges: edges.length > 0 };
-}
-
-function primaryNodeRef(node) {
-  return normalizeNodeRef(node?.protocolId || node?.protocol_id || node?.id || node?.slug || node?.title || "");
-}
-
-function arrangeOverviewNodes(visibleNodes, selectedIndex) {
-  const count = visibleNodes.length;
-  const columns = count <= 1 ? 1 : count <= 4 ? 2 : Math.min(4, Math.ceil(Math.sqrt(count)));
-  const rows = Math.max(1, Math.ceil(count / Math.max(1, columns)));
-  const gapX = columns > 1 ? 620 / (columns - 1) : 0;
-  const gapY = rows > 1 ? 360 / (rows - 1) : 0;
-  const startX = columns > 1 ? 140 : 450;
-  const startY = rows > 1 ? 150 : 310;
-  return visibleNodes.map((node, index) => {
-    const column = columns ? index % columns : 0;
-    const row = columns ? Math.floor(index / columns) : 0;
-    return {
-      key: nodeKey(node),
-      source: node,
-      title: node.title || node.id || "Untitled",
-      type: node.type,
-      selected: index === selectedIndex,
-      x: startX + column * gapX,
-      y: startY + row * gapY
-    };
-  });
-}
-
-function edgePath(edge) {
-  const dx = edge.target.x - edge.source.x;
-  const dy = edge.target.y - edge.source.y;
-  const distance = Math.max(1, Math.hypot(dx, dy));
-  const offset = Math.min(42, Math.max(18, distance * 0.08));
-  const normalX = (-dy / distance) * offset;
-  const normalY = (dx / distance) * offset;
-  const midX = (edge.source.x + edge.target.x) / 2 + normalX;
-  const midY = (edge.source.y + edge.target.y) / 2 + normalY;
-  return `M ${edge.source.x} ${edge.source.y} Q ${midX} ${midY} ${edge.target.x} ${edge.target.y}`;
-}
-
-function nodeRefs(node) {
-  return [
-    node?.id,
-    node?.protocolId,
-    node?.protocol_id,
-    node?.slug,
-    node?.title,
-    node?.relativePath,
-    node?.path,
-    node?.filePath,
-    node?.frontMatter?.id,
-    node?.frontMatter?.slug
-  ].filter(Boolean).map(normalizeNodeRef);
-}
-
-function nodeRelationships(node) {
-  const candidates = [
-    node?.frontMatter?.relationships,
-    node?.relationships,
-    node?.data?.relationships
-  ];
-  const relationships = candidates.find(Array.isArray) || [];
-  return relationships.map((relationship) => ({
-    ...relationship,
-    target: relationship.target || relationship.to || relationship.node || relationship.id
-  }));
-}
-
-function nodeTypeColorRecords(node) {
-  const frontMatter = node?.frontMatter || node?.data || node || {};
-  const types = [
-    frontMatter.type || node?.type,
-    ...(Array.isArray(frontMatter.facets) ? frontMatter.facets : [])
-  ].filter(Boolean);
-  const records = types
-    .map((type) => NODE_TYPES_BY_TYPE[type]?.color || {})
-    .filter(Boolean);
-  return records;
-}
-
-function nodeTypeFills(node) {
-  const colors = nodeTypeColorRecords(node)
-    .map((color) => color.bg || color.fill)
-    .filter(Boolean);
-  return [...new Set(colors)];
-}
-
-function nodeTypeOutlines(node) {
-  const colors = nodeTypeColorRecords(node)
-    .map((color) => color.outline || color.stroke)
-    .filter(Boolean);
-  return [...new Set(colors)];
 }
 
 function nodeFill(node) {
-  const colors = nodeTypeFills(node.source || node);
+  const colors = node.style?.fills || [];
   if (colors.length > 1) return `url(#${nodeGradientId(node)})`;
   return colors[0] || "rgba(21, 25, 34, 0.96)";
 }
 
 function nodeGradientId(node) {
   return `node-gradient-${String(node?.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
-}
-
-function nodeStroke(node) {
-  return nodeTypeOutlines(node)[0] || "rgba(255, 255, 255, 0.3)";
-}
-
-function nodeTextColor(node) {
-  const frontMatter = node?.frontMatter || node?.data || node || {};
-  const primary = NODE_TYPES_BY_TYPE[frontMatter.type || node?.type]?.color;
-  return primary?.fg || "#071827";
-}
-
-function relationshipColor(type) {
-  return RELATIONSHIP_TYPES_BY_TYPE[type]?.color || "rgba(85, 214, 190, 0.72)";
-}
-
-function relationshipDash(type) {
-  const style = RELATIONSHIP_TYPES_BY_TYPE[type]?.line_style || "";
-  if (style === "dashed") return "8 6";
-  if (style === "dotted") return "2 6";
-  if (style === "double") return "12 3 2 3";
-  return "";
-}
-
-function relationshipStrokeWidth(type) {
-  return RELATIONSHIP_TYPES_BY_TYPE[type]?.line_style === "double" ? 3.2 : 2.4;
 }
 
 function edgeMarkerId(edge) {
