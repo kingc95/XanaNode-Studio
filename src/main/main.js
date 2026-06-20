@@ -314,10 +314,12 @@ async function startHugoPreview({ rebuild = false } = {}) {
     stopHugoPreview();
     await preparePreviewArtifacts(preview.cwd);
     const invocation = await resolveHugoServerInvocation(preview);
-    hugoProcess = spawn(invocation.cmd, invocation.args, { cwd: preview.cwd, shell: false });
-    hugoProcess.stdout.on("data", (data) => sendToRenderer("preview:log", data.toString()));
-    hugoProcess.stderr.on("data", (data) => sendToRenderer("preview:log", data.toString()));
-    hugoProcess.on("exit", (code) => {
+    const previewProcess = spawn(invocation.cmd, invocation.args, { cwd: preview.cwd, shell: false });
+    hugoProcess = previewProcess;
+    previewProcess.stdout.on("data", (data) => sendToRenderer("preview:log", data.toString()));
+    previewProcess.stderr.on("data", (data) => sendToRenderer("preview:log", data.toString()));
+    previewProcess.on("exit", (code) => {
+      if (hugoProcess !== previewProcess) return;
       sendToRenderer("preview:stopped", { code });
       hugoProcess = null;
     });
@@ -589,8 +591,8 @@ function resolvePreviewInvocation(workspaceDir, previewSettings = {}) {
 }
 
 function createWorkspaceHugoProjection(workspaceDir) {
-  const projectionRoot = path.join(workspaceDir, ".xananode", "preview-hugo");
-  fs.rmSync(projectionRoot, { recursive: true, force: true });
+  let projectionRoot = path.join(workspaceDir, ".xananode", "preview-hugo");
+  projectionRoot = resetPreviewProjectionRoot(projectionRoot);
   fs.mkdirSync(projectionRoot, { recursive: true });
   fs.mkdirSync(path.join(projectionRoot, "content"), { recursive: true });
   fs.mkdirSync(path.join(projectionRoot, "static"), { recursive: true });
@@ -639,6 +641,28 @@ function createWorkspaceHugoProjection(workspaceDir) {
 
   sendToRenderer("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
   return projectionRoot;
+}
+
+function resetPreviewProjectionRoot(projectionRoot) {
+  if (!fs.existsSync(projectionRoot)) return projectionRoot;
+  try {
+    fs.rmSync(projectionRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
+    return projectionRoot;
+  } catch (error) {
+    const abandonedRoot = `${projectionRoot}.old-${Date.now()}`;
+    try {
+      fs.renameSync(projectionRoot, abandonedRoot);
+      sendToRenderer("preview:log", `Windows kept the previous Hugo preview open, so Studio moved it aside at ${abandonedRoot}\n`);
+      return projectionRoot;
+    } catch (renameError) {
+      const freshRoot = `${projectionRoot}-${Date.now()}`;
+      sendToRenderer(
+        "preview:log",
+        `Windows kept the previous Hugo preview locked, so Studio is using a fresh preview folder at ${freshRoot}\n`
+      );
+      return freshRoot;
+    }
+  }
 }
 
 function uniqueWorkspaceDir(name) {
