@@ -695,6 +695,11 @@ function ProjectionToolbar({
 function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
   const current = draft || selectedNode || nodes[0] || null;
   const graph = useMemo(() => buildLocalGraph(nodes, current), [nodes, current]);
+  const caption = graph.hasVisibleEdges
+    ? `${graph.nodes.length} visible nodes connected to ${current?.title || current?.id || "selected node"}`
+    : current
+      ? `${graph.nodes.length} workspace nodes shown; no relationships connect to ${current.title || current.id || "the selected node"} yet`
+      : `${nodes.length} workspace nodes`;
 
   if (!nodes.length) {
     return (
@@ -764,7 +769,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
         ))}
       </svg>
       <div className="graph-caption">
-        {current ? `${graph.nodes.length} visible nodes around ${current.title || current.id || "selected node"}` : `${nodes.length} workspace nodes`}
+        {caption}
       </div>
     </div>
   );
@@ -1099,7 +1104,7 @@ function buildLocalGraph(nodes, current) {
     for (const ref of nodeRefs(node)) byRef.set(ref, node);
   }
 
-  const currentRef = normalizeNodeRef(current?.id || current?.slug || current?.title || "");
+  const currentRef = primaryNodeRef(current);
   const rawEdges = [];
   for (const node of graphNodes) {
     const relationships = nodeRelationships(node);
@@ -1126,14 +1131,14 @@ function buildLocalGraph(nodes, current) {
     if (edge.targetRef === currentRef) visibleRefs.add(edge.sourceRef);
   }
 
-  if (!visibleRefs.size) {
-    for (const node of graphNodes.slice(0, 16)) visibleRefs.add(normalizeNodeRef(node.id || node.slug || node.title));
-  }
-
+  const hasCurrentEdges = rawEdges.some((edge) => edge.sourceRef === currentRef || edge.targetRef === currentRef);
+  const useOverviewLayout = !currentRef || !hasCurrentEdges;
   let visibleNodes = [...visibleRefs]
     .map((ref) => byRef.get(ref))
     .filter(Boolean);
-  if (visibleNodes.length < Math.min(graphNodes.length, 8)) {
+  if (useOverviewLayout) {
+    visibleNodes = graphNodes.slice(0, 18);
+  } else if (visibleNodes.length < Math.min(graphNodes.length, 8)) {
     const existing = new Set(visibleNodes.map((node) => nodeKey(node)));
     for (const node of graphNodes) {
       if (visibleNodes.length >= 8) break;
@@ -1145,8 +1150,10 @@ function buildLocalGraph(nodes, current) {
   const centerX = 450;
   const centerY = 310;
   const radius = visibleNodes.length > 10 ? 245 : 205;
-  const selectedIndex = Math.max(0, visibleNodes.findIndex((node) => normalizeNodeRef(node.id || node.slug || node.title) === currentRef));
-  const arranged = visibleNodes.map((node, index) => {
+  const selectedIndex = Math.max(0, visibleNodes.findIndex((node) => nodeRefs(node).some((ref) => normalizeNodeRef(ref) === currentRef)));
+  const arranged = useOverviewLayout
+    ? arrangeOverviewNodes(visibleNodes, selectedIndex)
+    : visibleNodes.map((node, index) => {
     const selected = index === selectedIndex;
     if (selected) return { key: nodeKey(node), source: node, title: node.title || node.id || "Untitled", type: node.type, selected: true, x: centerX, y: centerY };
     const orbitIndex = index > selectedIndex ? index - 1 : index;
@@ -1178,7 +1185,34 @@ function buildLocalGraph(nodes, current) {
     .filter((edge) => edge.source && edge.target && edge.source.key !== edge.target.key)
     .slice(0, 40);
 
-  return { nodes: arranged, edges };
+  return { nodes: arranged, edges, hasVisibleEdges: edges.length > 0 };
+}
+
+function primaryNodeRef(node) {
+  return normalizeNodeRef(node?.protocolId || node?.protocol_id || node?.id || node?.slug || node?.title || "");
+}
+
+function arrangeOverviewNodes(visibleNodes, selectedIndex) {
+  const count = visibleNodes.length;
+  const columns = count <= 4 ? count : Math.min(4, Math.ceil(Math.sqrt(count)));
+  const rows = Math.max(1, Math.ceil(count / Math.max(1, columns)));
+  const gapX = columns > 1 ? 620 / (columns - 1) : 0;
+  const gapY = rows > 1 ? 360 / (rows - 1) : 0;
+  const startX = columns > 1 ? 140 : 450;
+  const startY = rows > 1 ? 150 : 310;
+  return visibleNodes.map((node, index) => {
+    const column = columns ? index % columns : 0;
+    const row = columns ? Math.floor(index / columns) : 0;
+    return {
+      key: nodeKey(node),
+      source: node,
+      title: node.title || node.id || "Untitled",
+      type: node.type,
+      selected: index === selectedIndex,
+      x: startX + column * gapX,
+      y: startY + row * gapY
+    };
+  });
 }
 
 function nodeRefs(node) {
