@@ -728,11 +728,22 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
       )}
       <svg className="graph-svg" viewBox="0 0 900 620" role="img" aria-label="Workspace substrate graph">
         <defs>
-          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(85, 214, 190, 0.72)" />
-          </marker>
+          {graph.edges.map((edge) => (
+            <marker
+              id={edgeMarkerId(edge)}
+              key={`marker-${edge.key}`}
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="5"
+              markerHeight="5"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={relationshipColor(edge.type)} />
+            </marker>
+          ))}
           {graph.nodes.map((node) => {
-            const colors = nodeTypeColors(node.source);
+            const colors = nodeTypeFills(node.source);
             if (colors.length < 2) return null;
             return (
               <linearGradient id={nodeGradientId(node)} key={node.key} x1="0%" y1="0%" x2="100%" y2="100%">
@@ -745,15 +756,13 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
         </defs>
         {graph.edges.map((edge) => (
           <g key={edge.key}>
-            <line
+            <path
               className="edge"
-              x1={edge.source.x}
-              y1={edge.source.y}
-              x2={edge.target.x}
-              y2={edge.target.y}
+              d={edgePath(edge)}
               stroke={relationshipColor(edge.type)}
               strokeDasharray={relationshipDash(edge.type)}
-              markerEnd="url(#arrow)"
+              strokeWidth={relationshipStrokeWidth(edge.type)}
+              markerEnd={`url(#${edgeMarkerId(edge)})`}
             />
             <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
               {humanizeRelationship(edge.type)}
@@ -772,8 +781,8 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
               fill={nodeFill(node)}
               stroke={nodeStroke(node.source)}
             />
-            <text textAnchor="middle" y="-3">{trimLabel(node.title, node.selected ? 24 : 16)}</text>
-            <text className="graph-type" textAnchor="middle" y="15">{node.type || "node"}</text>
+            <text textAnchor="middle" y="-3" fill={nodeTextColor(node.source)}>{trimLabel(node.title, node.selected ? 24 : 16)}</text>
+            <text className="graph-type" textAnchor="middle" y="15" fill={nodeTextColor(node.source)}>{node.type || "node"}</text>
           </g>
         ))}
       </svg>
@@ -1232,7 +1241,7 @@ function primaryNodeRef(node) {
 
 function arrangeOverviewNodes(visibleNodes, selectedIndex) {
   const count = visibleNodes.length;
-  const columns = count <= 4 ? count : Math.min(4, Math.ceil(Math.sqrt(count)));
+  const columns = count <= 1 ? 1 : count <= 4 ? 2 : Math.min(4, Math.ceil(Math.sqrt(count)));
   const rows = Math.max(1, Math.ceil(count / Math.max(1, columns)));
   const gapX = columns > 1 ? 620 / (columns - 1) : 0;
   const gapY = rows > 1 ? 360 / (rows - 1) : 0;
@@ -1251,6 +1260,18 @@ function arrangeOverviewNodes(visibleNodes, selectedIndex) {
       y: startY + row * gapY
     };
   });
+}
+
+function edgePath(edge) {
+  const dx = edge.target.x - edge.source.x;
+  const dy = edge.target.y - edge.source.y;
+  const distance = Math.max(1, Math.hypot(dx, dy));
+  const offset = Math.min(42, Math.max(18, distance * 0.08));
+  const normalX = (-dy / distance) * offset;
+  const normalY = (dx / distance) * offset;
+  const midX = (edge.source.x + edge.target.x) / 2 + normalX;
+  const midY = (edge.source.y + edge.target.y) / 2 + normalY;
+  return `M ${edge.source.x} ${edge.source.y} Q ${midX} ${midY} ${edge.target.x} ${edge.target.y}`;
 }
 
 function nodeRefs(node) {
@@ -1281,20 +1302,34 @@ function nodeRelationships(node) {
   }));
 }
 
-function nodeTypeColors(node) {
+function nodeTypeColorRecords(node) {
   const frontMatter = node?.frontMatter || node?.data || node || {};
   const types = [
     frontMatter.type || node?.type,
     ...(Array.isArray(frontMatter.facets) ? frontMatter.facets : [])
   ].filter(Boolean);
-  const colors = types
-    .map((type) => NODE_TYPES_BY_TYPE[type]?.color)
+  const records = types
+    .map((type) => NODE_TYPES_BY_TYPE[type]?.color || {})
+    .filter(Boolean);
+  return records;
+}
+
+function nodeTypeFills(node) {
+  const colors = nodeTypeColorRecords(node)
+    .map((color) => color.bg || color.fill)
+    .filter(Boolean);
+  return [...new Set(colors)];
+}
+
+function nodeTypeOutlines(node) {
+  const colors = nodeTypeColorRecords(node)
+    .map((color) => color.outline || color.stroke)
     .filter(Boolean);
   return [...new Set(colors)];
 }
 
 function nodeFill(node) {
-  const colors = nodeTypeColors(node.source || node);
+  const colors = nodeTypeFills(node.source || node);
   if (colors.length > 1) return `url(#${nodeGradientId(node)})`;
   return colors[0] || "rgba(21, 25, 34, 0.96)";
 }
@@ -1304,7 +1339,13 @@ function nodeGradientId(node) {
 }
 
 function nodeStroke(node) {
-  return nodeTypeColors(node)[0] || "rgba(255, 255, 255, 0.3)";
+  return nodeTypeOutlines(node)[0] || "rgba(255, 255, 255, 0.3)";
+}
+
+function nodeTextColor(node) {
+  const frontMatter = node?.frontMatter || node?.data || node || {};
+  const primary = NODE_TYPES_BY_TYPE[frontMatter.type || node?.type]?.color;
+  return primary?.fg || "#071827";
 }
 
 function relationshipColor(type) {
@@ -1317,6 +1358,14 @@ function relationshipDash(type) {
   if (style === "dotted") return "2 6";
   if (style === "double") return "12 3 2 3";
   return "";
+}
+
+function relationshipStrokeWidth(type) {
+  return RELATIONSHIP_TYPES_BY_TYPE[type]?.line_style === "double" ? 3.2 : 2.4;
+}
+
+function edgeMarkerId(edge) {
+  return `edge-arrow-${String(edge.key || edge.type || "edge").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
 }
 
 function humanizeRelationship(value) {

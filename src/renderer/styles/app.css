@@ -529,7 +529,10 @@ summary {
 }
 
 .edge {
-  stroke-width: 1.4;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.9;
 }
 
 .edge-label {
@@ -547,7 +550,8 @@ summary {
 }
 
 .graph-node circle {
-  stroke-width: 1.5;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.38));
 }
 
 .graph-node.selected circle {
@@ -556,17 +560,15 @@ summary {
 }
 
 .graph-node text {
-  fill: var(--xana-text);
   font-size: 12px;
   font-weight: 800;
   pointer-events: none;
   paint-order: stroke;
-  stroke: rgba(5, 7, 10, 0.8);
-  stroke-width: 4px;
+  stroke: rgba(255, 255, 255, 0.56);
+  stroke-width: 3px;
 }
 
 .graph-node .graph-type {
-  fill: var(--xana-accent);
   font-size: 9px;
   text-transform: uppercase;
 }
