@@ -57,6 +57,7 @@ function App() {
   const [centerMode, setCenterMode] = useState("graph");
   const [catalogMode, setCatalogMode] = useState("type");
   const [appMetadata, setAppMetadata] = useState(buildMetadata);
+  const [buildSuggestionMode, setBuildSuggestionMode] = useState("review");
   const [projectionLayout, setProjectionLayout] = useState("single");
   const [projectionSplit, setProjectionSplit] = useState(55);
   const [relationshipLinkMode, setRelationshipLinkMode] = useState(null);
@@ -312,6 +313,33 @@ function App() {
 
   async function exportSubstrate() {
     await run(() => (api.exportSubstrate ? api.exportSubstrate() : api.exportPack()), "Exported .substrate");
+  }
+
+  async function importAssets() {
+    const result = await run(() => api.importAssets(), "Imported assets");
+    if (result?.workspace) {
+      const firstImported = result.imported?.[0];
+      const importedNode = firstImported
+        ? result.workspace.nodes?.find((node) => (
+          node.title === firstImported.nodeData?.title
+          || node.data?.asset === firstImported.nodeData?.asset
+          || node.data?.asset_path === firstImported.nodeData?.asset
+        ))
+        : null;
+      if (importedNode) {
+        setSelectedNode(importedNode);
+        setDraft(makeDraft(importedNode));
+      }
+      const linkCount = result.imported?.reduce((sum, item) => sum + (item.intakeAnalysis?.link_suggestions?.length || 0), 0) || 0;
+      const transclusionCount = result.imported?.reduce((sum, item) => sum + (item.intakeAnalysis?.transclusion_suggestions?.length || 0), 0) || 0;
+      const relationshipCount = result.imported?.reduce((sum, item) => sum + (item.intakeAnalysis?.mention_relationships?.length || 0), 0) || 0;
+      if (linkCount || transclusionCount || relationshipCount) {
+        setNotice({
+          type: "success",
+          text: `Imported assets. Core found ${relationshipCount} mention relationships, ${linkCount} link candidates, and ${transclusionCount} transclusion candidates.`
+        });
+      }
+    }
   }
 
   async function createWorkspace(defaults = {}) {
@@ -717,7 +745,11 @@ function App() {
           <button onClick={openWorkspace}>Open</button>
           <button onClick={() => setIntertwingleOpen(true)}>Intertwingle .substrate</button>
           <button disabled={!workspace} onClick={refreshStatus}>Health</button>
-          <button disabled={!workspace} onClick={() => run(() => api.build(), "Built substrate artifacts")}>Build Artifacts</button>
+          <select value={buildSuggestionMode} onChange={(event) => setBuildSuggestionMode(event.target.value)} title="Suggestion handling during build">
+            <option value="review">Review suggestions</option>
+            <option value="apply">Apply safe suggestions</option>
+          </select>
+          <button disabled={!workspace} onClick={() => run(() => api.build({ suggestionMode: buildSuggestionMode }), buildSuggestionMode === "apply" ? "Built artifacts and applied safe suggestions" : "Built substrate artifacts")}>Build Artifacts</button>
           <button disabled={!workspace} onClick={exportSubstrate}>Export .substrate</button>
           <button disabled={!workspace || !hugoEnabled} onClick={startPreview}>Hugo Projection</button>
           <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
@@ -809,7 +841,7 @@ function App() {
                 </select>
               </div>
               <button className="wide primary" onClick={newNode}>+ New Node</button>
-              <button className="wide" onClick={() => run(() => api.importAssets(), "Imported assets")}>Import Media / Sources</button>
+              <button className="wide" onClick={importAssets}>Import Media / Sources</button>
               <div className="catalog-list">
                 {Object.entries(nodeGroups).map(([group, groupNodes]) => (
                   <details key={group} open>
@@ -1407,11 +1439,13 @@ function HealthView({ status, refreshStatus, onRemoveImport, onToggleMountedNode
   const health = status.health || {};
   const score = health.score ?? health.health_score ?? "-";
   const issues = health.issues || health.warnings || [];
+  const counts = health.counts || {};
   return (
     <div className="health-view">
       <div className="score-card">
         <div className="score">{score}</div>
         <div>Knowledge health</div>
+        <small>{counts.suggestions || 0} suggestions, {counts.applied_suggestions || 0} applied</small>
       </div>
       <div className="health-columns">
         <section className="panel-card">
@@ -1555,6 +1589,9 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
   const trailSequence = Array.isArray(frontMatter.nodes) ? frontMatter.nodes : [];
   const availableTrailTargets = nodes.filter((node) => projectionNodeRef(node) !== projectionNodeRef(draft));
   const localNodePath = resolveNodeFilePath(draft);
+  const intakeAnalysis = frontMatter.intake_analysis && typeof frontMatter.intake_analysis === "object"
+    ? frontMatter.intake_analysis
+    : null;
 
   function updateFrontMatter(key, value) {
     setDraft({ ...draft, frontMatter: { ...frontMatter, [key]: value } });
@@ -1608,6 +1645,31 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
 
   function removeTrailNode(index) {
     updateTrailSequence(trailSequence.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function applyIntakeSuggestedType() {
+    if (!intakeAnalysis?.suggested_type) return;
+    updateFrontMatter("type", intakeAnalysis.suggested_type);
+  }
+
+  function applyIntakeSuggestedSummary() {
+    if (!intakeAnalysis?.suggested_summary) return;
+    updateFrontMatter("summary", intakeAnalysis.suggested_summary);
+  }
+
+  function applyIntakeMentionRelationships() {
+    const next = [...relationships];
+    for (const suggestion of intakeAnalysis?.mention_relationships || []) {
+      if (!suggestion?.target) continue;
+      const exists = next.some((relationship) => relationship.type === (suggestion.type || "mentions") && relationship.target === suggestion.target);
+      if (exists) continue;
+      next.push({
+        type: suggestion.type || "mentions",
+        target: suggestion.target,
+        summary: suggestion.summary || "This imported text mentions an existing node."
+      });
+    }
+    updateFrontMatter("relationships", next);
   }
 
   return (
@@ -1709,6 +1771,50 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
 
       <FieldLabel help="The authored prose for this node. Relationships, sources, and transclusions should carry the structure around it instead of forcing everything into text." href={canonicalHelpUrl("property", "content")}>Content</FieldLabel>
       <textarea className="body-editor" value={draft.body || ""} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+
+      {intakeAnalysis && (
+        <section className="editor-section">
+          <div className="panel-row">
+            <div className="panel-title">Intake Analysis</div>
+            <HelpHint title="Intake Analysis" href={canonicalHelpUrl("concept", "xananode")}>
+              Core inspected imported text and looked for a likely summary, likely extracted type, existing node mentions, link candidates, and possible transclusions.
+            </HelpHint>
+          </div>
+          {intakeAnalysis.suggested_type && intakeAnalysis.suggested_type !== type && (
+            <div className="relationship-definition">
+              <span className="pill">Suggested type</span>
+              <p>{intakeAnalysis.suggested_type}</p>
+              <div className="relationship-actions">
+                <button type="button" onClick={applyIntakeSuggestedType}>Use suggested type</button>
+              </div>
+            </div>
+          )}
+          {intakeAnalysis.suggested_summary && intakeAnalysis.suggested_summary !== (frontMatter.summary || "") && (
+            <div className="relationship-definition">
+              <span className="pill">Suggested summary</span>
+              <p>{intakeAnalysis.suggested_summary}</p>
+              <div className="relationship-actions">
+                <button type="button" onClick={applyIntakeSuggestedSummary}>Use suggested summary</button>
+              </div>
+            </div>
+          )}
+          {!!intakeAnalysis.mention_relationships?.length && (
+            <div className="relationship-definition">
+              <span className="pill">Mention relationships</span>
+              <p>{intakeAnalysis.mention_relationships.length} existing node mention{intakeAnalysis.mention_relationships.length === 1 ? "" : "s"} detected from imported text.</p>
+              <div className="relationship-actions">
+                <button type="button" onClick={applyIntakeMentionRelationships}>Add mention relationships</button>
+              </div>
+            </div>
+          )}
+          {!!intakeAnalysis.link_suggestions?.length && (
+            <div className="muted">{intakeAnalysis.link_suggestions.length} link candidate{intakeAnalysis.link_suggestions.length === 1 ? "" : "s"} detected.</div>
+          )}
+          {!!intakeAnalysis.transclusion_suggestions?.length && (
+            <div className="muted">{intakeAnalysis.transclusion_suggestions.length} transclusion candidate{intakeAnalysis.transclusion_suggestions.length === 1 ? "" : "s"} detected.</div>
+          )}
+        </section>
+      )}
 
       {type === "trail" && (
         <section className="editor-section">

@@ -17,6 +17,7 @@ import {
   validateWorkspace,
   computeKnowledgeHealth,
   createNode,
+  createIntakeAnalysisContext,
   importAssetAsNode,
   inspectSubstratePackage,
   openPackAsWorkspace,
@@ -384,8 +385,9 @@ ipcMain.handle("workspace:importAssets", async () => {
     });
     if (result.canceled || !result.filePaths.length) return ok({ canceled: true });
     const imported = [];
+    const analysisContext = await createIntakeAnalysisContext(currentWorkspaceDir);
     for (const sourceFile of result.filePaths) {
-      imported.push(await importAssetAsNode(currentWorkspaceDir, sourceFile, {}));
+      imported.push(await importAssetAsNode(currentWorkspaceDir, sourceFile, { analysisContext }));
     }
     return ok({ imported, workspace: await refreshWorkspace() });
   } catch (error) {
@@ -404,10 +406,14 @@ ipcMain.handle("workspace:saveSnapshot", async (_, payload = {}) => {
   }
 });
 
-ipcMain.handle("workspace:build", async () => {
+ipcMain.handle("workspace:build", async (_, payload = {}) => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
-    const result = await buildWorkspace(currentWorkspaceDir);
+    const result = await buildWorkspace(currentWorkspaceDir, {
+      core: {
+        suggestionMode: payload.suggestionMode || "review"
+      }
+    });
     return ok({ result });
   } catch (error) {
     return fail(error);

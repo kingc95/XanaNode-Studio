@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld("xananode", {
   deleteNode: (payload) => ipcRenderer.invoke("workspace:deleteNode", payload),
   importAssets: () => ipcRenderer.invoke("workspace:importAssets"),
   saveSnapshot: (payload) => ipcRenderer.invoke("workspace:saveSnapshot", payload),
-  build: () => ipcRenderer.invoke("workspace:build"),
+  build: (payload) => ipcRenderer.invoke("workspace:build", payload),
   exportSubstrate: () => ipcRenderer.invoke("workspace:exportSubstrate"),
   exportPack: () => ipcRenderer.invoke("workspace:exportSubstrate"),
   removeImport: (importId) => ipcRenderer.invoke("workspace:removeImport", { importId }),

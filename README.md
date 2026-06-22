@@ -4,6 +4,10 @@ Created by [Christian Siefen](https://xananode.com/) for the [XanaNode project](
 
 Local-first desktop studio for making and maintaining XanaNode substrates.
 
+Canonical protocol statement:
+
+XanaNode is a protocol for independently authored knowledge substrates that preserve relationships, provenance, lineage, disagreement, and addressable fragments, so knowledge can move across tools and media without losing its structure.
+
 Studio is where an author can shape a substrate directly: create a node, choose what kind of thing it is, connect it to other nodes with named relationships, check the work, and preview how the substrate can be projected for readers.
 
 A substrate can be projected in more than one way. The graph projection helps authors see structure. The Hugo projection shows the same substrate as a readable website. Hugo is one lens, not the substrate itself.
