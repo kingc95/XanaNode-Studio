@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
@@ -8,20 +9,27 @@ import {
   initWorkspace,
   openWorkspace,
   buildWorkspace,
+  computeWorkspaceStatus,
   exportWorkspacePack,
+  listFederationTargets,
+  cloneFederationTarget,
+  mountSubstrateImport,
   validateWorkspace,
   computeKnowledgeHealth,
   createNode,
   importAssetAsNode,
+  inspectSubstratePackage,
   openPackAsWorkspace,
   updateNode,
+  planNodeDeletion,
+  deleteNode,
   workspaceApi
 } from "@xananode/workspace";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, "../..");
-const protocolIconPath = path.join(appRoot, "vendor", "xananode-workspace-repo", "vendor", "xananode-core", "vendor", "xananode-protocol", "media", "images", "xananode-icon.svg");
+const protocolIconPath = path.join(appRoot, "vendor", "xananode-core", "vendor", "xananode-protocol", "media", "images", "xananode-icon.svg");
 const appMetadata = readAppMetadata();
 
 let mainWindow = null;
@@ -54,6 +62,7 @@ function createWindow() {
       sandbox: false
     }
   });
+  installAppMenu();
   mainWindow.loadURL(rendererUrl());
 }
 
@@ -62,6 +71,77 @@ function sendToRenderer(channel, payload) {
   const { webContents } = mainWindow;
   if (!webContents || webContents.isDestroyed()) return;
   webContents.send(channel, payload);
+}
+
+function sendStudioCommand(command, payload = {}) {
+  sendToRenderer("studio:command", { command, ...payload });
+}
+
+function installAppMenu() {
+  const template = [
+    {
+      label: "File",
+      submenu: [
+        { label: "Open Workspace...", accelerator: "CmdOrCtrl+O", click: () => sendStudioCommand("workspace:open") },
+        { label: "Intertwingle .substrate...", accelerator: "CmdOrCtrl+Shift+O", click: () => sendStudioCommand("substrate:intertwingle") },
+        { label: "Open Online Substrate...", accelerator: "CmdOrCtrl+Shift+L", click: () => sendStudioCommand("substrate:registry") },
+        { type: "separator" },
+        { label: "Save Node", accelerator: "CmdOrCtrl+S", click: () => sendStudioCommand("node:save") },
+        { label: "Export .substrate", accelerator: "CmdOrCtrl+E", click: () => sendStudioCommand("substrate:export") },
+        { type: "separator" },
+        process.platform === "darwin" ? { role: "close" } : { role: "quit" }
+      ]
+    },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" }
+      ]
+    },
+    {
+      label: "XanaNode",
+      submenu: [
+        { label: "Graph Projection", accelerator: "CmdOrCtrl+1", click: () => sendStudioCommand("projection:graph") },
+        { label: "Hugo Projection", accelerator: "CmdOrCtrl+2", click: () => sendStudioCommand("projection:hugo") },
+        { label: "Both Projections", accelerator: "CmdOrCtrl+3", click: () => sendStudioCommand("projection:both") },
+        { type: "separator" },
+        { label: "Run Health Check", accelerator: "CmdOrCtrl+Shift+H", click: () => sendStudioCommand("workspace:health") },
+        { label: "Build Artifacts", accelerator: "CmdOrCtrl+B", click: () => sendStudioCommand("workspace:build") },
+        { label: "Export .substrate", accelerator: "CmdOrCtrl+E", click: () => sendStudioCommand("substrate:export") },
+        { label: "Start Hugo Projection", accelerator: "CmdOrCtrl+Shift+P", click: () => sendStudioCommand("preview:start") },
+        { label: "Fit Graph", accelerator: "CmdOrCtrl+0", click: () => sendStudioCommand("graph:fit") },
+        { label: "Zoom Graph In", accelerator: "CmdOrCtrl+Plus", click: () => sendStudioCommand("graph:zoom-in") },
+        { label: "Zoom Graph Out", accelerator: "CmdOrCtrl+-", click: () => sendStudioCommand("graph:zoom-out") },
+        { label: "Reset Graph View", accelerator: "CmdOrCtrl+Shift+0", click: () => sendStudioCommand("graph:reset") },
+        { type: "separator" },
+        { label: "Rebuild Hugo Projection", accelerator: "CmdOrCtrl+R", click: () => sendStudioCommand("preview:rebuild") },
+        { label: "Validate Workspace", accelerator: "CmdOrCtrl+Shift+V", click: () => sendStudioCommand("workspace:validate") }
+      ]
+    },
+    { role: "windowMenu" },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "XanaNode Canonical Site",
+          click: () => shell.openExternal("https://xananode.com/")
+        },
+        {
+          label: "XanaNode GitHub",
+          click: () => shell.openExternal("https://github.com/kingc95")
+        }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function readAppMetadata() {
@@ -79,6 +159,64 @@ function readAppMetadata() {
     };
   } catch {
     return fallback;
+  }
+}
+
+async function openSubstrateAsWorkspace(substrateSource, options = {}) {
+  const substrateRoot = fs.existsSync(substrateSource) && fs.statSync(substrateSource).isFile()
+    ? path.dirname(substrateSource)
+    : substrateSource;
+  const inspected = inspectSubstratePackage(substrateSource);
+  const substrateManifest = inspected.manifest || readPackManifest(substrateRoot);
+  const targetDir = uniqueWorkspaceDir(`${options.name || substrateManifest.name || substrateManifest.id || path.basename(substrateRoot)} Working Copy`);
+  currentWorkspaceDir = targetDir;
+  const workspace = await openPackAsWorkspace(substrateSource, targetDir, {
+    name: `${options.name || substrateManifest.name || "XanaNode Substrate"} Working Copy`,
+    git: true
+  });
+  return ok({ workspace: normalizeWorkspace(workspace) });
+}
+
+async function intertwingleIntoCurrentWorkspace(substrateSource, options = {}) {
+  if (!currentWorkspaceDir) {
+    return openSubstrateAsWorkspace(substrateSource, options);
+  }
+  const result = await mountSubstrateImport(currentWorkspaceDir, substrateSource, options);
+  const status = await computeWorkspaceStatus(currentWorkspaceDir);
+  return ok({
+    workspace: normalizeWorkspace(result.workspace),
+    mounted_import: result.entry,
+    intake_reviews: status.intake_reviews || []
+  });
+}
+
+async function handleOpenSubstrateFileDialog() {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Intertwingle XanaNode Substrate File",
+      properties: ["openFile"],
+      filters: [
+        { name: "XanaNode substrates", extensions: ["substrate", "json", "jsonl"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled || !result.filePaths[0]) return ok({ canceled: true });
+    return intertwingleIntoCurrentWorkspace(result.filePaths[0]);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+async function handleOpenSubstrateFolderDialog() {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Intertwingle XanaNode Substrate Folder",
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || !result.filePaths[0]) return ok({ canceled: true });
+    return intertwingleIntoCurrentWorkspace(result.filePaths[0]);
+  } catch (error) {
+    return fail(error);
   }
 }
 
@@ -135,33 +273,21 @@ ipcMain.handle("dialog:openWorkspace", async () => {
   }
 });
 
-ipcMain.handle("dialog:openPack", async () => {
+ipcMain.handle("workspace:openAtPath", async (_, payload = {}) => {
   try {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: "Open XanaNode Pack",
-      properties: ["openFile", "openDirectory"],
-      filters: [
-        { name: "XanaNode pack JSON", extensions: ["json"] },
-        { name: "All files", extensions: ["*"] }
-      ]
-    });
-    if (result.canceled || !result.filePaths[0]) return ok({ canceled: true });
-    const packSource = result.filePaths[0];
-    const packRoot = fs.existsSync(packSource) && fs.statSync(packSource).isFile()
-      ? path.dirname(packSource)
-      : packSource;
-    const packManifest = readPackManifest(packRoot);
-    const targetDir = uniqueWorkspaceDir(`${packManifest.name || packManifest.id || path.basename(packRoot)} Working Copy`);
-    currentWorkspaceDir = targetDir;
-    const workspace = await openPackAsWorkspace(packSource, targetDir, {
-      name: `${packManifest.name || "XanaNode Pack"} Working Copy`,
-      git: true
-    });
+    if (!payload.rootDir) throw new Error("No workspace path was provided.");
+    currentWorkspaceDir = path.resolve(payload.rootDir);
+    const workspace = await openWorkspace(currentWorkspaceDir);
     return ok({ workspace: normalizeWorkspace(workspace) });
   } catch (error) {
     return fail(error);
   }
 });
+
+ipcMain.handle("dialog:openSubstrateFile", handleOpenSubstrateFileDialog);
+ipcMain.handle("dialog:openSubstrateFolder", handleOpenSubstrateFolderDialog);
+ipcMain.handle("dialog:intertwingleSubstrate", handleOpenSubstrateFileDialog);
+ipcMain.handle("dialog:openPack", handleOpenSubstrateFileDialog);
 
 ipcMain.handle("dialog:createWorkspace", async (_, defaults = {}) => {
   try {
@@ -197,13 +323,13 @@ ipcMain.handle("workspace:refresh", async () => {
 ipcMain.handle("workspace:status", async () => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
-    const api = workspaceApi(currentWorkspaceDir);
-    const [workspace, health, validation] = await Promise.all([
-      refreshWorkspace(),
-      api.health(),
-      api.validate().catch((error) => ({ ok: false, errors: [error.message] }))
-    ]);
-    return ok({ workspace, health, validation });
+    const status = await computeWorkspaceStatus(currentWorkspaceDir);
+    return ok({
+      workspace: normalizeWorkspace(status.workspace),
+      health: status.health,
+      validation: status.validation,
+      intake_reviews: status.intake_reviews || []
+    });
   } catch (error) {
     return fail(error);
   }
@@ -224,6 +350,26 @@ ipcMain.handle("workspace:updateNode", async (_, payload) => {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const result = await updateNode(currentWorkspaceDir, payload.relativeFile, payload.nodeData, payload.body, payload.options || {});
     return ok({ result, workspace: await refreshWorkspace() });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:planNodeDeletion", async (_, payload) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const plan = await planNodeDeletion(currentWorkspaceDir, payload.nodeRef, payload.options || {});
+    return ok({ plan });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:deleteNode", async (_, payload) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const result = await deleteNode(currentWorkspaceDir, payload.nodeRef, payload.options || {});
+    return ok({ result, workspace: normalizeWorkspace(result.workspace) });
   } catch (error) {
     return fail(error);
   }
@@ -268,6 +414,16 @@ ipcMain.handle("workspace:build", async () => {
   }
 });
 
+ipcMain.handle("workspace:exportSubstrate", async () => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const result = await exportWorkspacePack(currentWorkspaceDir);
+    return ok({ result });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
 ipcMain.handle("workspace:exportPack", async () => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
@@ -283,6 +439,76 @@ ipcMain.handle("workspace:validate", async () => {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const validation = await validateWorkspace(currentWorkspaceDir);
     return ok({ validation });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:removeImport", async (_, payload = {}) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const api = workspaceApi(currentWorkspaceDir);
+    const result = api.removeImport(payload.importId);
+    const status = await computeWorkspaceStatus(currentWorkspaceDir);
+    return ok({
+      result,
+      workspace: normalizeWorkspace(status.workspace),
+      health: status.health,
+      validation: status.validation,
+      intake_reviews: status.intake_reviews || []
+    });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:toggleImportNodeVisibility", async (_, payload = {}) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const api = workspaceApi(currentWorkspaceDir);
+    const result = api.toggleImportNodeVisibility(payload.importId, payload.nodeId, payload.enabled !== false);
+    const status = await computeWorkspaceStatus(currentWorkspaceDir);
+    return ok({
+      result,
+      workspace: normalizeWorkspace(status.workspace),
+      health: status.health,
+      validation: status.validation,
+      intake_reviews: status.intake_reviews || []
+    });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:listFederationTargets", async () => {
+  try {
+    return ok({ federation_targets: listFederationTargets() });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:openFederationTarget", async (_, payload = {}) => {
+  try {
+    const targetId = String(payload.targetId || "").trim();
+    if (!targetId) throw new Error("No federation target selected.");
+    const target = listFederationTargets().find((candidate) => candidate.id === targetId || candidate.namespace === targetId);
+    if (!target) throw new Error(`Unknown federation target: ${targetId}`);
+
+    const cloneRoot = path.join(app.getPath("documents"), "XanaNode Studio Workspaces", ".federation-cache");
+    fs.mkdirSync(cloneRoot, { recursive: true });
+    const cloneDir = uniqueSubdir(cloneRoot, target.id || target.namespace || "substrate");
+    const cloned = cloneFederationTarget(target, cloneDir, { branch: payload.branch });
+    const substrateSource = target.repository?.substrate_path
+      ? path.join(cloned.path, target.repository.substrate_path)
+      : cloned.path;
+    const opened = currentWorkspaceDir
+      ? await intertwingleIntoCurrentWorkspace(substrateSource, { name: cloned.name, version: `${cloned.branch}@${cloned.commit}` })
+      : await openSubstrateAsWorkspace(substrateSource, { name: cloned.name });
+    return {
+      ...opened,
+      cloned
+    };
   } catch (error) {
     return fail(error);
   }
@@ -309,6 +535,9 @@ async function startHugoPreview({ rebuild = false } = {}) {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const ws = await openWorkspace(currentWorkspaceDir);
+    if (ws.settings?.preview?.enabled === false || ws.settings?.preview?.renderer === "none") {
+      throw new Error("This substrate was created without a Hugo projection. Use Graph Projection, or create a workspace with Hugo enabled.");
+    }
     const preview = resolvePreviewInvocation(currentWorkspaceDir, ws.settings?.preview);
     sendToRenderer("preview:log", `${rebuild ? "Rebuilding" : "Starting"} Hugo projection...\n`);
     stopHugoPreview();
@@ -316,6 +545,9 @@ async function startHugoPreview({ rebuild = false } = {}) {
     const invocation = await resolveHugoServerInvocation(preview);
     const previewProcess = spawn(invocation.cmd, invocation.args, { cwd: preview.cwd, shell: false });
     hugoProcess = previewProcess;
+    if (invocation.url) {
+      shell.openExternal(invocation.url).catch(() => {});
+    }
     previewProcess.stdout.on("data", (data) => sendToRenderer("preview:log", data.toString()));
     previewProcess.stderr.on("data", (data) => sendToRenderer("preview:log", data.toString()));
     previewProcess.on("exit", (code) => {
@@ -578,7 +810,7 @@ function resolvePreviewInvocation(workspaceDir, previewSettings = {}) {
     return {
       cwd: projectionRoot,
       cmd: "hugo",
-      args: ["server", "--disableFastRender", "--themesDir", path.dirname(resolveBundledHugoRoot())],
+      args: ["server", "--disableFastRender", "--themesDir", path.join(projectionRoot, "themes")],
       url: previewSettings.url || "http://localhost:1313"
     };
   }
@@ -591,12 +823,14 @@ function resolvePreviewInvocation(workspaceDir, previewSettings = {}) {
 }
 
 function createWorkspaceHugoProjection(workspaceDir) {
-  let projectionRoot = path.join(workspaceDir, ".xananode", "preview-hugo");
+  let projectionRoot = previewProjectionRoot(workspaceDir);
   projectionRoot = resetPreviewProjectionRoot(projectionRoot);
   fs.mkdirSync(projectionRoot, { recursive: true });
   fs.mkdirSync(path.join(projectionRoot, "content"), { recursive: true });
   fs.mkdirSync(path.join(projectionRoot, "static"), { recursive: true });
   fs.mkdirSync(path.join(projectionRoot, "data"), { recursive: true });
+  const localThemeRoot = path.join(projectionRoot, "themes", "xananode-hugo");
+  fs.mkdirSync(path.dirname(localThemeRoot), { recursive: true });
 
   const workspaceContent = path.join(workspaceDir, "content");
   if (fs.existsSync(workspaceContent)) {
@@ -604,7 +838,18 @@ function createWorkspaceHugoProjection(workspaceDir) {
   }
 
   const manifest = readPackManifest(workspaceDir);
+  const importReferences = readWorkspaceImportReferences(workspaceDir, projectionRoot);
   const themeRoot = resolveBundledHugoRoot();
+  for (const folder of ["assets", "layouts", "static", "tools", "vendor"]) {
+    const source = path.join(themeRoot, folder);
+    const target = path.join(localThemeRoot, folder);
+    if (fs.existsSync(source)) fs.cpSync(source, target, { recursive: true, force: true });
+  }
+  for (const file of ["hugo.yaml", "package.json"]) {
+    const source = path.join(themeRoot, file);
+    const target = path.join(localThemeRoot, file);
+    if (fs.existsSync(source)) fs.copyFileSync(source, target);
+  }
   const iconSource = path.join(themeRoot, "static", "xananode-icon.svg");
   if (fs.existsSync(iconSource)) fs.copyFileSync(iconSource, path.join(projectionRoot, "static", "xananode-icon.svg"));
 
@@ -622,6 +867,15 @@ function createWorkspaceHugoProjection(workspaceDir) {
     '  image: "xananode-icon.svg"',
     "  xananode:",
     `    namespace: ${JSON.stringify(manifest.namespace || manifest.id || "studio.preview")}`,
+    ...(importReferences.length ? [
+      "    packs:",
+      ...importReferences.flatMap((pack) => [
+        `      - id: ${JSON.stringify(pack.id)}`,
+        `        source: ${JSON.stringify(pack.source)}`,
+        `        mode: ${JSON.stringify(pack.mode || "mounted")}`,
+        ...(pack.version ? [`        version: ${JSON.stringify(pack.version)}`] : [])
+      ])
+    ] : []),
     "    brand:",
     '      name: "XanaNode"',
     '      tagline: "Relationships preserve knowledge"',
@@ -641,6 +895,37 @@ function createWorkspaceHugoProjection(workspaceDir) {
 
   sendToRenderer("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
   return projectionRoot;
+}
+
+function previewProjectionRoot(workspaceDir) {
+  const baseName = path.basename(path.resolve(workspaceDir)).replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const digest = createHash("sha1").update(path.resolve(workspaceDir)).digest("hex").slice(0, 10);
+  return path.join(app.getPath("temp"), "xananode-studio", `${baseName}-${digest}`, "preview-hugo");
+}
+
+function readWorkspaceImportReferences(workspaceDir, projectionRoot) {
+  const importsFile = path.join(workspaceDir, ".xananode", "imports.json");
+  if (!fs.existsSync(importsFile)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(importsFile, "utf8"));
+    const entries = Array.isArray(parsed?.imports) ? parsed.imports : [];
+    return entries
+      .map((entry) => {
+        const candidate = entry.path || entry.source || "";
+        if (!candidate || /^[a-z]+:\/\//i.test(candidate)) return null;
+        const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(workspaceDir, candidate);
+        if (!fs.existsSync(absolute) || fs.statSync(absolute).isFile()) return null;
+        return {
+          id: entry.id || path.basename(absolute),
+          source: path.relative(projectionRoot, absolute).replace(/\\/g, "/"),
+          mode: entry.mode || "mounted",
+          version: entry.version || ""
+        };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function resetPreviewProjectionRoot(projectionRoot) {
@@ -667,6 +952,12 @@ function resetPreviewProjectionRoot(projectionRoot) {
 
 function uniqueWorkspaceDir(name) {
   const baseDir = path.join(app.getPath("documents"), "XanaNode Studio Workspaces");
+  const slug = slugFolderName(name || "xananode-substrate");
+  fs.mkdirSync(baseDir, { recursive: true });
+  return uniqueSubdir(baseDir, slug);
+}
+
+function uniqueSubdir(baseDir, name) {
   const slug = slugFolderName(name || "xananode-substrate");
   fs.mkdirSync(baseDir, { recursive: true });
   let candidate = path.join(baseDir, slug);

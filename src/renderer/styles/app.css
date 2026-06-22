@@ -71,6 +71,12 @@ button.primary,
   font-weight: 850;
 }
 
+button.danger,
+.danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fecaca;
+}
+
 input,
 textarea,
 select {
@@ -109,6 +115,44 @@ label {
   display: flex;
   align-items: center;
   gap: 0.38rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0.7rem 0 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.03);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--xana-text);
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0.1rem 0 0;
+  accent-color: var(--xana-accent);
+  flex: 0 0 auto;
+}
+
+.checkbox-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.checkbox-row strong {
+  font-size: 0.88rem;
+}
+
+.checkbox-row small {
+  color: var(--xana-text-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .help-hint {
@@ -456,6 +500,7 @@ summary {
   position: relative;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .projection-split {
@@ -526,6 +571,111 @@ summary {
   border: 1px solid var(--xana-panel-border);
   border-radius: 8px;
   background: rgba(5, 7, 10, 0.72);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.graph-wrap.panning .graph-svg {
+  cursor: grabbing;
+}
+
+.graph-pan-surface {
+  fill: transparent;
+}
+
+.graph-layer {
+  transform-origin: 0 0;
+}
+
+.graph-tools,
+.graph-depth-tools,
+.graph-pan-tools {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  gap: 0.32rem;
+  padding: 0.34rem;
+  border: 1px solid rgba(85, 214, 190, 0.24);
+  border-radius: 999px;
+  background: rgba(5, 7, 10, 0.82);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(14px);
+}
+
+.graph-tools {
+  top: 1.65rem;
+  left: 1.65rem;
+}
+
+.graph-depth-tools {
+  top: 1.65rem;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: min(25rem, calc(100% - 14rem));
+  justify-content: center;
+}
+
+.graph-pan-tools {
+  right: 1.65rem;
+  bottom: 3.25rem;
+  display: grid;
+  grid-template-columns: repeat(3, 2rem);
+  grid-template-rows: repeat(3, 2rem);
+  border-radius: 1rem;
+}
+
+.graph-pan-tools button:first-child {
+  grid-column: 2;
+}
+
+.graph-pan-tools button:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.graph-pan-tools button:nth-child(3) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.graph-pan-tools button:nth-child(4) {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.graph-tools button,
+.graph-depth-tools button,
+.graph-pan-tools button {
+  min-height: 2rem;
+  min-width: 2rem;
+  padding: 0 0.58rem;
+  border-radius: 999px;
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(15, 19, 27, 0.92);
+  font-size: 0.76rem;
+}
+
+.graph-tools button:hover,
+.graph-depth-tools button:hover,
+.graph-depth-tools button.active,
+.graph-pan-tools button:hover {
+  border-color: var(--xana-accent);
+  color: var(--xana-accent);
+}
+
+.graph-depth-tools button {
+  flex: 1 1 0;
+  min-width: 4.5rem;
+  max-width: 6rem;
+  color: #9fb1c7;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-depth-tools button.active {
+  background: rgba(85, 214, 190, 0.18);
 }
 
 .edge {
@@ -533,6 +683,12 @@ summary {
   stroke-linecap: round;
   stroke-linejoin: round;
   opacity: 0.9;
+  pointer-events: none;
+}
+
+.edge-arrow {
+  pointer-events: none;
+  opacity: 0.95;
 }
 
 .edge-label {
@@ -543,6 +699,59 @@ summary {
   font-size: 11px;
   font-weight: 800;
   text-anchor: middle;
+  pointer-events: none;
+}
+
+.graph-travel-layer {
+  pointer-events: none;
+}
+
+.graph-travel-rail {
+  stroke: rgba(85, 214, 190, 0.94);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 10 8;
+  filter: drop-shadow(0 0 10px rgba(85, 214, 190, 0.38));
+  opacity: 0;
+  animation: graph-travel-rail 620ms ease-out var(--travel-delay, 0ms) forwards;
+}
+
+.graph-travel-start {
+  fill: rgba(255, 255, 255, 0.95);
+  stroke: rgba(85, 214, 190, 0.95);
+  stroke-width: 2;
+}
+
+.graph-travel-step {
+  fill: rgba(85, 214, 190, 0.95);
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: graph-travel-step 360ms ease-out var(--travel-delay, 0ms) forwards;
+}
+
+@keyframes graph-travel-rail {
+  from {
+    stroke-dashoffset: 112;
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+    opacity: 0.96;
+  }
+}
+
+@keyframes graph-travel-step {
+  from {
+    transform: scale(0.58);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0.96;
+  }
 }
 
 .graph-node {
@@ -560,17 +769,79 @@ summary {
 }
 
 .graph-node text {
-  font-size: 12px;
-  font-weight: 800;
   pointer-events: none;
+}
+
+.graph-node-title-chip rect {
+  fill: rgba(5, 10, 18, 0.94);
+  stroke: rgba(148, 163, 184, 0.48);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-node-title {
+  fill: #f8fafc;
+  font-size: 13px;
+  font-weight: 850;
   paint-order: stroke;
-  stroke: rgba(255, 255, 255, 0.56);
-  stroke-width: 3px;
+  stroke: rgba(0, 0, 0, 0.82);
+  stroke-width: 2.2px;
+}
+
+.graph-node-icon {
+  font-size: 18px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1.2px;
+  pointer-events: none;
+}
+
+.graph-node.selected .graph-node-icon {
+  font-size: 22px;
+}
+
+.graph-node-media {
+  pointer-events: none;
+  opacity: 0.96;
+}
+
+.graph-node-type-media {
+  pointer-events: none;
+  opacity: 0.96;
+}
+
+.graph-type-badge rect {
+  fill: rgba(2, 8, 13, 0.7);
+  stroke: rgba(85, 214, 190, 0.42);
+  stroke-width: 1.1;
+  vector-effect: non-scaling-stroke;
 }
 
 .graph-node .graph-type {
-  font-size: 9px;
+  fill: rgba(159, 247, 232, 0.86);
+  font-size: 8.5px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.68);
+  stroke-width: 1.4px;
   text-transform: uppercase;
+}
+
+.graph-node.selected .graph-node-title {
+  font-size: 14.5px;
+}
+
+.graph-node.distance-2 .graph-node-title,
+.graph-node.distance-3 .graph-node-title,
+.graph-node.distance-4 .graph-node-title {
+  font-size: 12px;
+}
+
+.graph-node.distance-3 .graph-type-badge,
+.graph-node.distance-4 .graph-type-badge {
+  display: none;
 }
 
 .graph-caption {
@@ -622,21 +893,31 @@ summary {
 .welcome {
   flex: 1;
   display: grid;
-  place-items: center;
+  place-items: start center;
   padding: 2rem;
 }
 
 .welcome {
   background: var(--xana-bg);
+  width: min(1220px, 100%);
+  margin: 0 auto;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+  gap: 1rem;
+  align-content: start;
 }
 
 .welcome-card {
-  width: min(820px, 100%);
   border: 1px solid var(--xana-accent-border);
   border-radius: 1.2rem;
   padding: 2.2rem;
   background: linear-gradient(180deg, rgba(12, 16, 22, 0.96), rgba(8, 11, 16, 0.96));
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+}
+
+.recent-card {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
 }
 
 .kicker {
@@ -668,6 +949,84 @@ summary {
   flex-wrap: wrap;
   gap: 0.65rem;
   margin-top: 1.3rem;
+}
+
+.welcome-credit,
+.workspace-credit {
+  margin-top: 1rem;
+  color: #cbd5e1;
+  line-height: 1.55;
+}
+
+.welcome-credit a,
+.workspace-credit a {
+  color: var(--xana-accent);
+}
+
+.credit-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.credit-links a {
+  color: var(--xana-text-muted);
+  font-size: 0.86rem;
+}
+
+.credit-links a:hover {
+  color: var(--xana-accent);
+}
+
+.recent-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.recent-item {
+  text-align: left;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem 0.9rem;
+}
+
+.recent-item strong {
+  font-size: 0.92rem;
+}
+
+.recent-item small {
+  color: var(--xana-text-muted);
+  line-height: 1.35;
+}
+
+.registry-targets {
+  display: grid;
+  gap: 0.6rem;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.registry-target-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.registry-target-card strong {
+  font-size: 0.92rem;
+}
+
+.registry-target-card small,
+.registry-target-card em,
+.registry-target-card span {
+  color: var(--xana-text-muted);
+  font-style: normal;
+  line-height: 1.35;
 }
 
 .setup-backdrop {
@@ -739,12 +1098,23 @@ summary {
   text-align: center;
 }
 
+.editor-empty p {
+  max-width: 28rem;
+}
+
 .sticky-editor-head {
   position: sticky;
   top: 0;
   background: var(--xana-panel-bg);
   padding-bottom: 0.75rem;
   z-index: 2;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .body-editor {
@@ -893,6 +1263,12 @@ summary {
   color: var(--xana-text-muted);
 }
 
+.trail-sequence-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+}
+
 .relationship-definition {
   margin-top: 0.55rem;
   padding: 0.65rem;
@@ -960,6 +1336,15 @@ summary {
   padding: 0.5rem;
   margin: 0.35rem 0;
   color: #cbd5e1;
+}
+
+.mounted-node-list {
+  display: grid;
+  gap: 0.3rem;
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 0.6rem;
+  padding-right: 0.2rem;
 }
 
 .log-view {

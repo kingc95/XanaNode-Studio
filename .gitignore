@@ -2,5 +2,6 @@ node_modules/
 dist/
 vendor/xananode-workspace/
 vendor/xananode-workspace.backup/
+vendor/xananode-core/
 *.log
 .DS_Store

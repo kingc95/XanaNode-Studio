@@ -3,16 +3,27 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("xananode", {
   appMetadata: () => ipcRenderer.invoke("app:metadata"),
   openWorkspace: () => ipcRenderer.invoke("dialog:openWorkspace"),
-  openPack: () => ipcRenderer.invoke("dialog:openPack"),
+  openWorkspaceAtPath: (payload) => ipcRenderer.invoke("workspace:openAtPath", payload),
+  intertwingleSubstrate: () => ipcRenderer.invoke("dialog:intertwingleSubstrate"),
+  openSubstrateFile: () => ipcRenderer.invoke("dialog:openSubstrateFile"),
+  openSubstrateFolder: () => ipcRenderer.invoke("dialog:openSubstrateFolder"),
+  openPack: () => ipcRenderer.invoke("dialog:intertwingleSubstrate"),
   createWorkspace: (defaults) => ipcRenderer.invoke("dialog:createWorkspace", defaults),
   refreshWorkspace: () => ipcRenderer.invoke("workspace:refresh"),
   workspaceStatus: () => ipcRenderer.invoke("workspace:status"),
   createNode: (payload) => ipcRenderer.invoke("workspace:createNode", payload),
   updateNode: (payload) => ipcRenderer.invoke("workspace:updateNode", payload),
+  planNodeDeletion: (payload) => ipcRenderer.invoke("workspace:planNodeDeletion", payload),
+  deleteNode: (payload) => ipcRenderer.invoke("workspace:deleteNode", payload),
   importAssets: () => ipcRenderer.invoke("workspace:importAssets"),
   saveSnapshot: (payload) => ipcRenderer.invoke("workspace:saveSnapshot", payload),
   build: () => ipcRenderer.invoke("workspace:build"),
-  exportPack: () => ipcRenderer.invoke("workspace:exportPack"),
+  exportSubstrate: () => ipcRenderer.invoke("workspace:exportSubstrate"),
+  exportPack: () => ipcRenderer.invoke("workspace:exportSubstrate"),
+  removeImport: (importId) => ipcRenderer.invoke("workspace:removeImport", { importId }),
+  toggleImportNodeVisibility: (payload) => ipcRenderer.invoke("workspace:toggleImportNodeVisibility", payload),
+  listFederationTargets: () => ipcRenderer.invoke("workspace:listFederationTargets"),
+  openFederationTarget: (payload) => ipcRenderer.invoke("workspace:openFederationTarget", payload),
   validate: () => ipcRenderer.invoke("workspace:validate"),
   openInShell: (targetPath) => ipcRenderer.invoke("workspace:openInShell", targetPath),
   startHugoPreview: () => ipcRenderer.invoke("preview:startHugo"),
@@ -28,5 +39,10 @@ contextBridge.exposeInMainWorld("xananode", {
     const listener = (_, message) => callback(message);
     ipcRenderer.on("preview:stopped", listener);
     return () => ipcRenderer.removeListener("preview:stopped", listener);
+  },
+  onStudioCommand: (callback) => {
+    const listener = (_, message) => callback(message);
+    ipcRenderer.on("studio:command", listener);
+    return () => ipcRenderer.removeListener("studio:command", listener);
   }
 });

@@ -8,7 +8,7 @@
     "build:metadata": "node scripts/write-build-metadata.mjs",
     "predev": "npm run build:metadata",
     "dev": "node scripts/dev.mjs",
-    "prestart": "npm run build:metadata",
+    "prestart": "npm run build",
     "start": "electron .",
     "prebuild": "npm run build:metadata",
     "build": "vite build",

@@ -1,15 +1,35 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import nodeTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
-import relationshipTypeRegistry from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
-import xananodeIconUrl from "../../vendor/xananode-workspace-repo/vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
-import { buildGraphProjection, createProjectionRegistry, projectionEdgePath, relationshipsFromProjectionNodes } from "../../vendor/xananode-workspace-repo/vendor/xananode-core/src/projection.js";
+import nodeTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-node-types.v0.3.0.json";
+import relationshipTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
+import xananodeIconUrl from "../../vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
+import {
+  buildHopNeighborhood,
+  buildReadableTravelOverlayMarkup,
+  createProjectionRegistry,
+  findProjectionRoute,
+  fitReadableProjectionViewport,
+  layoutReadableProjection,
+  projectionEdgeArrowPoints,
+  projectionEdgePath,
+  relationshipsFromProjectionNodes,
+  wrapProjectionText
+} from "../../vendor/xananode-core/src/projection.js";
 import buildMetadata from "../generated/build-metadata.json";
 import "./styles/app.css";
 
 const NODE_TYPE_DEFINITIONS = [...nodeTypeRegistry.node_types].sort((a, b) => a.label.localeCompare(b.label));
 const NODE_TYPES = NODE_TYPE_DEFINITIONS.map((definition) => definition.type);
 const NODE_TYPES_BY_TYPE = Object.fromEntries(NODE_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
+const NODE_TYPE_ICON_MODULES = import.meta.glob("../../vendor/xananode-core/vendor/xananode-protocol/media/projection/node-types/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default"
+});
+const NODE_TYPE_ICON_URLS = Object.fromEntries(Object.entries(NODE_TYPE_ICON_MODULES).map(([file, url]) => {
+  const name = file.split(/[\\/]/).pop()?.replace(/\.svg$/i, "") || "";
+  return [name, url];
+}));
 const RELATIONSHIP_TYPE_DEFINITIONS = [...relationshipTypeRegistry.relationship_types].sort((a, b) => {
   const categoryCompare = a.category.localeCompare(b.category);
   return categoryCompare || a.label.localeCompare(b.label);
@@ -29,6 +49,9 @@ function App() {
   const [notice, setNotice] = useState(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [intertwingleOpen, setIntertwingleOpen] = useState(false);
+  const [federationTargets, setFederationTargets] = useState([]);
+  const [federationLoading, setFederationLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewLogs, setPreviewLogs] = useState([]);
   const [centerMode, setCenterMode] = useState("graph");
@@ -37,8 +60,9 @@ function App() {
   const [projectionLayout, setProjectionLayout] = useState("single");
   const [projectionSplit, setProjectionSplit] = useState(55);
   const [relationshipLinkMode, setRelationshipLinkMode] = useState(null);
+  const [graphCommand, setGraphCommand] = useState(null);
+  const [recentWorkspaces, setRecentWorkspaces] = useState(() => loadRecentWorkspaces());
   const api = window.xananode || createUnavailableApi();
-  const previewFrameRef = useRef(null);
   const lastPreviewNodeRef = useRef("");
 
   useEffect(() => {
@@ -62,6 +86,54 @@ function App() {
     const timer = window.setTimeout(() => setNotice(null), notice.type === "error" ? 7000 : 4000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (workspace) rememberRecentWorkspace(workspace, setRecentWorkspaces);
+  }, [workspace]);
+
+  useEffect(() => {
+    const offCommand = api.onStudioCommand?.((message) => {
+      const command = message?.command;
+      if (!command) return;
+      if (command.startsWith("graph:")) {
+        setProjectionLayout("single");
+        setCenterMode("graph");
+        setGraphCommand({ command, nonce: Date.now() });
+        return;
+      }
+      if (command === "projection:graph") {
+        setProjectionLayout("single");
+        setCenterMode("graph");
+      } else if (command === "projection:hugo") {
+        setProjectionLayout("single");
+        setCenterMode("preview");
+      } else if (command === "projection:both") {
+        setProjectionLayout("split");
+        setCenterMode("graph");
+      } else if (command === "preview:rebuild") {
+        rebuildPreview();
+      } else if (command === "preview:start") {
+        startPreview();
+      } else if (command === "workspace:open") {
+        openWorkspace();
+      } else if (command === "workspace:health") {
+        refreshStatus();
+      } else if (command === "workspace:build") {
+        run(() => api.build(), "Built substrate artifacts");
+      } else if (command === "substrate:intertwingle" || command === "pack:open") {
+        setIntertwingleOpen(true);
+      } else if (command === "substrate:registry") {
+        openRegistry();
+      } else if (command === "node:save") {
+        saveNode();
+      } else if (command === "substrate:export" || command === "pack:export") {
+        exportSubstrate();
+      } else if (command === "workspace:validate") {
+        validateWorkspace();
+      }
+    });
+    return () => offCommand?.();
+  }, [api, draft, previewUrl, workspace]);
 
   function loadPreviewLocation(location, source = "preview") {
     const cleanLocation = String(location || "").trim();
@@ -142,21 +214,8 @@ function App() {
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, [previewUrl, workspace]);
 
-  function handlePreviewFrameLoad() {
-    const frameWindow = previewFrameRef.current?.contentWindow;
-    if (!frameWindow) return;
-
-    try {
-      loadPreviewLocation(frameWindow.location.href, "iframe load");
-    } catch {
-      setPreviewLogs((logs) => [
-        ...logs.slice(-120),
-        "[iframe load] Preview loaded. Node-click sync needs the Hugo preview bridge because the iframe is cross-origin.\n"
-      ]);
-    }
-  }
-
   const nodes = workspace?.nodes || [];
+  const hugoEnabled = workspace?.settings?.preview?.enabled !== false && workspace?.settings?.preview?.renderer !== "none";
   const currentNode = draft || selectedNode;
   const nodeGroups = useMemo(() => groupNodes(nodes, catalogMode), [nodes, catalogMode]);
   const suggestions = useMemo(() => getSuggestions(currentNode, nodes), [currentNode, nodes]);
@@ -180,17 +239,79 @@ function App() {
       setStatus(null);
       setSelectedNode(result.workspace.nodes?.[0] || null);
       setDraft(null);
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
     }
   }
 
-  async function openPack() {
-    const result = await run(() => api.openPack(), "Opened pack working copy");
+  async function intertwingleSubstrate() {
+    const result = await run(
+      () => (api.intertwingleSubstrate ? api.intertwingleSubstrate() : api.openPack()),
+      "Intertwingled substrate working copy"
+    );
     if (result?.workspace) {
       setStatus(null);
       setSelectedNode(result.workspace.nodes?.[0] || null);
       setDraft(null);
       setCenterMode("graph");
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
     }
+  }
+
+  async function intertwingleSubstrateFile() {
+    const result = await run(
+      () => (api.openSubstrateFile ? api.openSubstrateFile() : api.intertwingleSubstrate ? api.intertwingleSubstrate() : api.openPack()),
+      workspace ? "Mounted substrate into this workspace" : "Opened intertwingled substrate working copy"
+    );
+    if (result?.workspace) {
+      setStatus(null);
+      setSelectedNode(selectedNode || result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setCenterMode(workspace ? "health" : "graph");
+      setIntertwingleOpen(false);
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
+    }
+  }
+
+  async function intertwingleSubstrateFolder() {
+    const result = await run(
+      () => (api.openSubstrateFolder ? api.openSubstrateFolder() : api.intertwingleSubstrate ? api.intertwingleSubstrate() : api.openPack()),
+      workspace ? "Mounted substrate into this workspace" : "Opened intertwingled substrate working copy"
+    );
+    if (result?.workspace) {
+      setStatus(null);
+      setSelectedNode(selectedNode || result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setCenterMode(workspace ? "health" : "graph");
+      setIntertwingleOpen(false);
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
+    }
+  }
+
+  async function openRegistry() {
+    setFederationLoading(true);
+    setIntertwingleOpen(true);
+    const result = await run(
+      () => (api.listFederationTargets ? api.listFederationTargets() : { ok: true, federation_targets: [] }),
+      "Loaded online substrate registry"
+    );
+    setFederationTargets(result?.federation_targets || []);
+    setFederationLoading(false);
+  }
+
+  async function openFederationTarget(targetId) {
+    const result = await run(() => api.openFederationTarget({ targetId }), "Cloned and intertwingled online substrate");
+    if (result?.workspace) {
+      setStatus(null);
+      setSelectedNode(selectedNode || result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setCenterMode(workspace ? "health" : "graph");
+      setIntertwingleOpen(false);
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
+    }
+  }
+
+  async function exportSubstrate() {
+    await run(() => (api.exportSubstrate ? api.exportSubstrate() : api.exportPack()), "Exported .substrate");
   }
 
   async function createWorkspace(defaults = {}) {
@@ -199,6 +320,7 @@ function App() {
         name: defaults.name || "New XanaNode Substrate",
         author: defaults.author || "",
         git: defaults.git !== false,
+        includeHugo: defaults.includeHugo === true,
         useDefaultLocation: defaults.useDefaultLocation !== false
       }),
       "Created workspace"
@@ -208,8 +330,19 @@ function App() {
       setSelectedNode(result.workspace.nodes?.[0] || null);
       setDraft(null);
       setSetupOpen(false);
+      rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
     }
     return result;
+  }
+
+  async function openRecentWorkspace(rootDir) {
+    const result = await run(() => api.openWorkspaceAtPath?.({ rootDir }), "Opened recent workspace");
+    if (result?.workspace) {
+      setStatus(null);
+      setSelectedNode(result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setRecentWorkspaces((items) => refreshRecentWorkspace(items, result.workspace));
+    }
   }
 
   async function createTrialWorkspace() {
@@ -217,9 +350,11 @@ function App() {
       name: "XanaNode Studio Trial",
       author: "Studio Trial",
       git: false,
+      includeHugo: true,
       useDefaultLocation: true
     });
     if (!result?.workspace) return;
+    const namespace = result.workspace.manifest?.namespace || "xananode-studio-trial";
     await run(
       () => api.createNode({
         node: {
@@ -229,8 +364,7 @@ function App() {
           subtype: "how_to",
           summary: "A practical question node for learning how inquiries, claims, sources, and steps connect.",
           relationships: [
-            { type: "raises", target: "campfire-safety-gap" },
-            { type: "requires_information", target: "campfire-safety-gap" }
+            { type: "requires_information", target: `${namespace}:knowledge_gap/campfire-safety-gap` }
           ]
         },
         body: "# How do you make a campfire?\n\nA useful substrate can begin with an ordinary question. From here, Studio can connect the question to an answer, a safety gap, sources, tools, places, and claims that explain what matters.\n"
@@ -242,13 +376,13 @@ function App() {
         node: {
           id: "campfire-basic-answer",
           title: "A small fire starts with tinder, kindling, fuel, airflow, and a safe place.",
-          type: "response",
-          subtype: "answer",
-          summary: "Build a safe fire lay, light tinder, add kindling, then feed larger fuel slowly.",
-          relationships: [
-            { type: "answers", target: "how-to-make-a-campfire" },
-            { type: "requires", target: "campfire-safe-location" },
-            { type: "requires", target: "dry-tinder-and-kindling" }
+            type: "response",
+            subtype: "answer",
+            summary: "Build a safe fire lay, light tinder, add kindling, then feed larger fuel slowly.",
+            relationships: [
+            { type: "answers", target: `${namespace}:question/how-to-make-a-campfire` },
+            { type: "requires", target: `${namespace}:claim/campfire-safe-location` },
+            { type: "requires", target: `${namespace}:claim/dry-tinder-and-kindling` }
           ]
         },
         body: "# A small fire starts with tinder, kindling, fuel, airflow, and a safe place.\n\nClear the area, keep water nearby, make a small tinder bundle, add kindling loosely enough for air to move, and only add larger fuel after the flame is stable.\n"
@@ -262,7 +396,7 @@ function App() {
           title: "A campfire needs a safe location.",
           type: "claim",
           summary: "The fire site should be legal, clear of hazards, sheltered from spreading, and easy to extinguish.",
-          relationships: [{ type: "supports", target: "campfire-basic-answer" }]
+          relationships: [{ type: "supports", target: `${namespace}:response/campfire-basic-answer` }]
         },
         body: "# A campfire needs a safe location.\n\nA fire is not just a flame. It is a relationship between weather, ground, fuel, people, and responsibility.\n"
       }),
@@ -275,7 +409,7 @@ function App() {
           title: "Dry tinder and kindling make ignition possible.",
           type: "claim",
           summary: "Small, dry material catches first and gives larger fuel time to heat.",
-          relationships: [{ type: "supports", target: "campfire-basic-answer" }]
+          relationships: [{ type: "supports", target: `${namespace}:response/campfire-basic-answer` }]
         },
         body: "# Dry tinder and kindling make ignition possible.\n\nThe first useful fact is scale: small dry fibers catch, pencil-thin sticks sustain, and larger wood comes later.\n"
       }),
@@ -289,22 +423,74 @@ function App() {
           type: "knowledge_gap",
           subtype: "safety",
           summary: "The answer changes by place, season, weather, and local law.",
-          relationships: [{ type: "context_for", target: "how-to-make-a-campfire" }]
+          relationships: [{ type: "context_for", target: `${namespace}:question/how-to-make-a-campfire` }]
         },
         body: "# What rules and fire conditions apply here?\n\nA complete answer needs local fire restrictions, current wind, drought conditions, and whether open flames are allowed.\n"
       }),
       "Seeded safety gap"
     );
+    await run(
+      () => api.updateNode({
+        relativeFile: "content/nodes/start-here.md",
+        nodeData: {
+          id: "start-here",
+          title: "Start Here",
+          type: "trail",
+          summary: "A simple starter trail that walks from a practical question to an answer and its supporting context.",
+          nodes: [
+            `${namespace}:question/how-to-make-a-campfire`,
+            `${namespace}:response/campfire-basic-answer`,
+            `${namespace}:claim/campfire-safe-location`,
+            `${namespace}:claim/dry-tinder-and-kindling`,
+            `${namespace}:knowledge_gap/campfire-safety-gap`
+          ]
+        },
+        body: "# Start Here\n\nBegin with a practical question, move to a working answer, then inspect the claims and open context that keep the answer grounded.\n"
+      }),
+      "Linked starter trail"
+    );
     const refreshed = await run(() => api.refreshWorkspace(), "Trial workspace ready");
     if (refreshed?.workspace) {
-      setSelectedNode(refreshed.workspace.nodes?.[0] || null);
+      setSelectedNode(refreshed.workspace.nodes?.find((node) => node.data?.id === "start-here") || refreshed.workspace.nodes?.[0] || null);
       setCenterMode("graph");
+      rememberRecentWorkspace(refreshed.workspace, setRecentWorkspaces);
     }
   }
 
   async function refreshStatus() {
-    const result = await run(() => api.workspaceStatus(), "Workspace status refreshed");
-    if (result) setStatus({ health: result.health, validation: result.validation });
+    const result = await run(() => api.workspaceStatus(), "Loaded health and intake report");
+    if (result) {
+      setStatus({ health: result.health, validation: result.validation, intake_reviews: result.intake_reviews || [] });
+      setCenterMode("health");
+    }
+  }
+
+  async function validateWorkspace() {
+    const result = await run(() => api.validate(), "Validated workspace");
+    if (result?.validation) {
+      setStatus((current) => ({
+        health: current?.health || null,
+        validation: result.validation,
+        intake_reviews: current?.intake_reviews || []
+      }));
+      setCenterMode("health");
+    }
+  }
+
+  async function removeMountedImport(importId) {
+    const result = await run(() => api.removeImport(importId), "Removed mounted substrate");
+    if (result) {
+      setStatus({ health: result.health, validation: result.validation, intake_reviews: result.intake_reviews || [] });
+      setCenterMode("health");
+    }
+  }
+
+  async function toggleMountedNode(importId, nodeId, enabled) {
+    const result = await run(() => api.toggleImportNodeVisibility({ importId, nodeId, enabled }), enabled ? "Restored mounted node" : "Hid mounted node");
+    if (result) {
+      setStatus({ health: result.health, validation: result.validation, intake_reviews: result.intake_reviews || [] });
+      setCenterMode("health");
+    }
   }
 
   async function startPreview() {
@@ -323,33 +509,130 @@ function App() {
     }
   }
 
+  function cloneFrontMatterForNewNode(node) {
+    const source = extractFrontMatterShape(node);
+    const next = { ...source };
+    delete next.id;
+    delete next.protocol_id;
+    delete next.slug;
+    delete next.source_node_id;
+    delete next.source_pack_id;
+    delete next.source_file;
+    delete next.content_id;
+    delete next.version_id;
+    delete next.signature;
+    delete next.relationships;
+    delete next.nodes;
+    delete next.branches;
+    delete next.imported_from;
+    delete next.imported;
+    delete next.pack_id;
+    delete next.pack_mode;
+    delete next.readOnly;
+    delete next.mounted;
+    delete next.workspace_copy_status;
+    delete next.created_at;
+    delete next.updated_at;
+    delete next.filePath;
+    delete next.path;
+    delete next.relativePath;
+    delete next.relativeFile;
+    delete next.__file;
+    next.title = `Copy of ${source.title || source.id || "Untitled Node"}`;
+    next.summary = "";
+    next.relationships = [];
+    if (next.type === "trail") {
+      next.nodes = [];
+      next.branches = [];
+    }
+    return next;
+  }
+
+  async function duplicateNode() {
+    const base = draft || selectedNode;
+    if (!base) return;
+    const frontMatter = cloneFrontMatterForNewNode(base);
+    const result = await run(
+      () => api.createNode({ node: normalizeFrontMatterForSave(frontMatter), body: `# ${frontMatter.title}\n\n` }),
+      "Duplicated node"
+    );
+    if (!result?.result?.data) return;
+    const saved = findWorkspaceNode(
+      result.result.data.protocol_id || result.result.data.id || result.result.filePath || frontMatter.title,
+      result.workspace?.nodes || []
+    );
+    if (saved) {
+      setSelectedNode(saved);
+      setDraft(makeDraft(saved));
+    } else {
+      setDraft({
+        ...frontMatter,
+        relativePath: result.result.filePath,
+        frontMatter: result.result.data
+      });
+    }
+    setCenterMode("graph");
+  }
+
   async function saveNode() {
     if (!draft) return;
     const relativeFile = draft.relativePath || draft.path || draft.filePath || draft.__file;
     if (!relativeFile) {
       const result = await run(
-        () => api.createNode({ node: draft.frontMatter || draft, body: draft.body || `# ${draft.title || "Untitled"}\n\n` }),
+        () => api.createNode({ node: normalizeFrontMatterForSave(draft.frontMatter || draft), body: draft.body || `# ${draft.title || "Untitled"}\n\n` }),
         "Created node"
       );
-      const saved = findWorkspaceNode(result?.result?.data?.id || draft.frontMatter?.id || draft.frontMatter?.title, result?.workspace?.nodes || []);
+      const saved = findWorkspaceNode(
+        result?.result?.data?.protocol_id || result?.result?.data?.id || result?.result?.filePath || draft.frontMatter?.title,
+        result?.workspace?.nodes || []
+      );
       if (saved) {
         setSelectedNode(saved);
         setDraft(makeDraft(saved));
+      } else if (result?.result?.data) {
+        setDraft({ ...draft, relativePath: result.result.filePath, frontMatter: result.result.data });
       }
       return;
     }
-    const nodeData = draft.frontMatter || extractFrontMatterShape(draft);
+    const nodeData = normalizeFrontMatterForSave(draft.frontMatter || extractFrontMatterShape(draft));
     const result = await run(() => api.updateNode({ relativeFile, nodeData, body: draft.body || "" }), "Saved node");
     const saved = findWorkspaceNode(
-      nodeData.protocol_id || nodeData.id || nodeData.title || relativeFile,
+      result?.result?.data?.protocol_id || result?.result?.data?.id || result?.result?.filePath || nodeData.protocol_id || nodeData.id || nodeData.title || relativeFile,
       result?.workspace?.nodes || []
     );
     if (saved) {
       setSelectedNode(saved);
       setDraft(makeDraft(saved));
     } else {
-      setDraft({ ...draft, frontMatter: nodeData });
+      setDraft({
+        ...draft,
+        relativePath: result?.result?.filePath || relativeFile,
+        frontMatter: result?.result?.data || nodeData
+      });
     }
+  }
+
+  async function deleteCurrentNode() {
+    if (!draft) return;
+    const nodeRef = resolveNodeFilePath(draft) || draft.frontMatter?.protocol_id || draft.frontMatter?.id || draft.title;
+    if (!nodeRef) {
+      setNotice({ type: "error", text: "Save this node before removing it." });
+      return;
+    }
+    const planResult = await api.planNodeDeletion?.({ nodeRef });
+    if (!planResult?.ok) {
+      setNotice({ type: "error", text: planResult?.error || "Could not inspect node removal impact." });
+      return;
+    }
+    const plan = planResult.plan;
+    const confirmed = window.confirm(formatDeletionWarning(plan));
+    if (!confirmed) return;
+    const result = await run(() => api.deleteNode({ nodeRef }), `Removed ${plan?.target?.title || "node"}`);
+    if (!result?.workspace) return;
+    const nextNodes = result.workspace.nodes || [];
+    const nextSelected = nextNodes[0] || null;
+    setSelectedNode(nextSelected);
+    setDraft(nextSelected?.readOnly ? null : (nextSelected ? makeDraft(nextSelected) : null));
   }
 
   async function saveSnapshot(reason) {
@@ -360,7 +643,7 @@ function App() {
 
   function selectNode(node) {
     setSelectedNode(node);
-    setDraft(makeDraft(node));
+    setDraft(node?.readOnly ? null : makeDraft(node));
   }
 
   function newNode() {
@@ -407,7 +690,7 @@ function App() {
       return;
     }
     const source = relationshipLinkMode.source;
-    const targetRef = node.id || node.slug || node.title;
+    const targetRef = projectionNodeRef(node);
     const sourceDraft = makeDraft(source);
     const frontMatter = sourceDraft.frontMatter || extractFrontMatterShape(sourceDraft);
     const relationships = Array.isArray(frontMatter.relationships) ? [...frontMatter.relationships] : [];
@@ -432,12 +715,11 @@ function App() {
         <div className="top-actions">
           <button onClick={() => setSetupOpen(true)}>New</button>
           <button onClick={openWorkspace}>Open</button>
-          <button onClick={openPack}>Open Pack</button>
+          <button onClick={() => setIntertwingleOpen(true)}>Intertwingle .substrate</button>
           <button disabled={!workspace} onClick={refreshStatus}>Health</button>
-          <button disabled={!workspace} onClick={() => run(() => api.build(), "Built artifacts")}>Build</button>
-          <button disabled={!workspace} onClick={() => run(() => api.exportPack(), "Exported pack")}>Export Pack</button>
-          <button disabled={!workspace} onClick={startPreview}>Preview</button>
-          <button disabled={!workspace} onClick={rebuildPreview}>Rebuild Hugo</button>
+          <button disabled={!workspace} onClick={() => run(() => api.build(), "Built substrate artifacts")}>Build Artifacts</button>
+          <button disabled={!workspace} onClick={exportSubstrate}>Export .substrate</button>
+          <button disabled={!workspace || !hugoEnabled} onClick={startPreview}>Hugo Projection</button>
           <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
         </div>
       </header>
@@ -457,9 +739,30 @@ function App() {
           onClose={() => setSnapshotOpen(false)}
         />
       )}
+      {intertwingleOpen && (
+        <IntertwingleDialog
+          targets={federationTargets}
+          loading={federationLoading}
+          onLocalFile={intertwingleSubstrateFile}
+          onLocalFolder={intertwingleSubstrateFolder}
+          onOpenRegistry={openRegistry}
+          onOpenTarget={openFederationTarget}
+          onClose={() => setIntertwingleOpen(false)}
+        />
+      )}
 
       {!workspace ? (
-        <Welcome onOpen={openWorkspace} onCreate={() => setSetupOpen(true)} onTrial={createTrialWorkspace} />
+        <Welcome
+          onOpen={openWorkspace}
+          onOpenRecent={openRecentWorkspace}
+          onCreate={() => setSetupOpen(true)}
+          onTrial={createTrialWorkspace}
+          recentWorkspaces={recentWorkspaces}
+          onClearRecent={() => {
+            clearRecentWorkspaces();
+            setRecentWorkspaces([]);
+          }}
+        />
       ) : (
         <main className="workspace-grid">
           <aside className="left-panel">
@@ -467,6 +770,9 @@ function App() {
               <div className="panel-title">Workspace</div>
               <div className="small muted">{workspace.rootDir}</div>
               <div className="manifest-name">{workspace.manifest?.name || workspace.manifest?.id || "Unnamed substrate"}</div>
+              <div className="workspace-credit">
+                Created by <a href="https://xananode.com/" target="_blank" rel="noreferrer">Christian Siefen</a> for the <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode</a> project.
+              </div>
               {isCanonicalWorkspace(workspace) && (
                 <div className="canon-warning">
                   You are viewing canonical XanaNode material. Explore freely; edits here become your own proposal until they are accepted back into the canon.
@@ -474,7 +780,7 @@ function App() {
               )}
               {isWorkingCopyWorkspace(workspace) && (
                 <div className="working-copy-warning">
-                  Working copy from {workspace.settings?.source_pack?.name || workspace.settings?.source_pack?.id || "an imported pack"}. Your changes are local proposals until the source owner accepts them.
+                  Working copy from {workspace.settings?.source_pack?.name || workspace.settings?.source_pack?.id || "an intertwingled substrate"}. Your changes are local proposals until the source owner accepts them.
                 </div>
               )}
               <div className="pill-row">
@@ -483,6 +789,12 @@ function App() {
                 <span className="pill">Git {workspace.git?.enabled ? "on" : "off"}</span>
                 {isWorkingCopyWorkspace(workspace) && <span className="pill">working copy</span>}
               </div>
+              {workspace.mountedImports?.packs?.length > 0 && (
+                <div className="working-copy-warning">
+                  Intertwingled substrates stay mounted into this workspace until you snapshot, merge, or remove them. They should not replace your local nodes.
+                </div>
+              )}
+              <ProjectCreditLinks />
             </section>
 
             <section className="panel-card">
@@ -530,28 +842,31 @@ function App() {
             />
             {projectionLayout === "split" && centerMode !== "health" && centerMode !== "logs" ? (
               <div className="projection-split" style={{ gridTemplateColumns: `${projectionSplit}% minmax(280px, 1fr)` }}>
-                <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} />
-                <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} compact />
+                <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />
+                <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} compact />
               </div>
             ) : (
               <>
-                {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} />}
-                {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} iframeRef={previewFrameRef} onFrameLoad={handlePreviewFrameLoad} logs={previewLogs} />}
+                {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />}
+                {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} />}
               </>
             )}
-            {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} />}
+                {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} />}
             {centerMode === "logs" && <LogView logs={previewLogs} />}
           </section>
 
           <aside className="right-panel">
             <EditorPanel
+              selectedNode={selectedNode}
               draft={draft}
               setDraft={setDraft}
               nodes={nodes}
               suggestions={suggestions}
               addRelationship={addRelationship}
               startRelationshipLink={startRelationshipLink}
+              duplicateNode={duplicateNode}
               saveNode={saveNode}
+              deleteNode={deleteCurrentNode}
             />
           </aside>
         </main>
@@ -560,7 +875,20 @@ function App() {
   );
 }
 
-function Welcome({ onOpen, onCreate, onTrial }) {
+function ProjectCreditLinks() {
+  return (
+    <div className="credit-links">
+      <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a>
+      <a href="https://github.com/kingc95/XanaNode-Protocol" target="_blank" rel="noreferrer">Protocol</a>
+      <a href="https://github.com/kingc95/XanaNode-Core-SDK" target="_blank" rel="noreferrer">Core SDK</a>
+      <a href="https://github.com/kingc95/XanaNode-Workspace" target="_blank" rel="noreferrer">Workspace</a>
+      <a href="https://github.com/kingc95/XanaNode-Hugo" target="_blank" rel="noreferrer">Hugo</a>
+      <a href="https://github.com/kingc95/XanaNode-Studio" target="_blank" rel="noreferrer">Studio</a>
+    </div>
+  );
+}
+
+function Welcome({ onOpen, onOpenRecent, onCreate, onTrial, recentWorkspaces = [], onClearRecent }) {
   return (
     <main className="welcome">
       <div className="welcome-card">
@@ -572,6 +900,29 @@ function Welcome({ onOpen, onCreate, onTrial }) {
           <button onClick={onTrial}>Try Demo Workspace</button>
           <button onClick={onOpen}>Open Existing</button>
         </div>
+        <p className="welcome-credit">Created by <a href="https://xananode.com/" target="_blank" rel="noreferrer">Christian Siefen</a>. Learn the model at <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a>.</p>
+        <ProjectCreditLinks />
+      </div>
+      <div className="welcome-card recent-card">
+        <div className="panel-row">
+          <div>
+            <div className="kicker">Recent</div>
+            <h2>Open where you left off</h2>
+          </div>
+          <button onClick={onClearRecent} disabled={!recentWorkspaces.length}>Clear</button>
+        </div>
+        {recentWorkspaces.length ? (
+          <div className="recent-list">
+            {recentWorkspaces.map((item) => (
+              <button key={item.rootDir} className="recent-item" onClick={() => onOpenRecent?.(item.rootDir)}>
+                <strong>{item.name || item.manifestName || item.rootDir}</strong>
+                <small>{item.rootDir}</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No recent substrates yet.</p>
+        )}
       </div>
     </main>
   );
@@ -581,12 +932,13 @@ function WorkspaceSetup({ onCreate, onTrial, onClose }) {
   const [name, setName] = useState("New XanaNode Substrate");
   const [author, setAuthor] = useState("");
   const [git, setGit] = useState(true);
+  const [includeHugo, setIncludeHugo] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
     setBusy(true);
-    await onCreate({ name, author, git, useDefaultLocation: true });
+    await onCreate({ name, author, git, includeHugo, useDefaultLocation: true });
     setBusy(false);
   }
 
@@ -614,7 +966,11 @@ function WorkspaceSetup({ onCreate, onTrial, onClose }) {
           <input type="checkbox" checked={git} onChange={(event) => setGit(event.target.checked)} />
           <span>Save snapshots with local Git</span>
         </label>
-        <p className="setup-note">Studio will create the folder in Documents/XanaNode Studio Workspaces so you can start immediately.</p>
+        <label className="toggle-row">
+          <input type="checkbox" checked={includeHugo} onChange={(event) => setIncludeHugo(event.target.checked)} />
+          <span>Include Hugo projection preview</span>
+        </label>
+        <p className="setup-note">Studio creates normal substrate files first. Hugo is optional: add that projection layer when this substrate needs a website preview.</p>
         <div className="setup-actions">
           <button type="submit" className="primary" disabled={!name.trim() || busy}>Create</button>
           <button type="button" onClick={trial} disabled={busy}>Try Demo</button>
@@ -652,6 +1008,43 @@ function SnapshotDialog({ defaultMessage, onSave, onClose }) {
           <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function IntertwingleDialog({ targets, loading, onLocalFile, onLocalFolder, onOpenRegistry, onOpenTarget, onClose }) {
+  return (
+    <div className="setup-backdrop">
+      <div className="setup-panel">
+        <div className="setup-header">
+          <div>
+            <div className="kicker">Intertwingle</div>
+            <h2>Bring another substrate into Studio</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <p className="setup-note">Choose a local `.substrate` bundle, a local substrate folder, or a known online substrate from the protocol registry.</p>
+        <div className="setup-actions">
+          <button type="button" className="primary" onClick={onLocalFile}>Choose .substrate File</button>
+          <button type="button" onClick={onLocalFolder}>Choose Folder</button>
+          <button type="button" onClick={onOpenRegistry}>Refresh Online Registry</button>
+        </div>
+        <div className="editor-section">
+          <div className="panel-title">Online Substrates</div>
+          {loading ? <p className="muted">Loading registry targets...</p> : null}
+          {!loading && !targets.length ? <p className="muted">No registry targets loaded yet.</p> : null}
+          <div className="registry-targets">
+            {targets.map((target) => (
+              <button type="button" key={target.id} className="registry-target-card" onClick={() => onOpenTarget(target.id)}>
+                <strong>{target.name}</strong>
+                <small>{target.id}</small>
+                <span>{target.description}</span>
+                <em>{target.repository?.url || ""}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -706,16 +1099,93 @@ function ProjectionToolbar({
   );
 }
 
-function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
+function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) {
   const current = draft || selectedNode || nodes[0] || null;
-  const graph = useMemo(() => buildLocalGraph(nodes, current), [nodes, current]);
+  const [graphDepth, setGraphDepth] = useState(1);
+  const graphNodes = useMemo(() => buildEffectiveGraphNodes(nodes, draft, selectedNode), [nodes, draft, selectedNode]);
+  const graph = useMemo(() => buildLocalGraph(graphNodes, current, graphDepth), [graphNodes, current, graphDepth]);
+  const graphKey = useMemo(() => graph.nodes.map((node) => node.id || node.key).join("|"), [graph.nodes]);
+  const [viewport, setViewport] = useState(() => fitGraphViewport(graph.nodes));
+  const [travelMarkup, setTravelMarkup] = useState("");
+  const [panning, setPanning] = useState(false);
+  const panRef = useRef(null);
+  const previousGraphRef = useRef({ currentId: projectionNodeRef(current), graph, viewport });
   const caption = graph.hasVisibleEdges
     ? `${graph.nodes.length} visible nodes connected to ${current?.title || current?.id || "selected node"}`
     : current
       ? `${graph.nodes.length} workspace nodes shown; no relationships connect to ${current.title || current.id || "the selected node"} yet`
-      : `${nodes.length} workspace nodes`;
+      : `${graphNodes.length} workspace nodes`;
 
-  if (!nodes.length) {
+  useEffect(() => {
+    setViewport(fitGraphViewport(graph.nodes));
+  }, [graphKey, current?.id, current?.title, graphDepth]);
+
+  useEffect(() => {
+    const previous = previousGraphRef.current;
+    const currentId = projectionNodeRef(current);
+    if (!previous?.currentId || !currentId || previous.currentId === currentId) {
+      previousGraphRef.current = { currentId, graph, viewport };
+      return;
+    }
+    const fromNode = previous.graph?.nodes?.find((node) => node.id === previous.currentId);
+    const toNode = previous.graph?.nodes?.find((node) => node.id === currentId);
+    const route = findProjectionRoute(previous.graph?.edges || [], previous.currentId, currentId, { maxDepth: 6 });
+    const routeNodes = route?.nodeIds
+      ?.map((id) => previous.graph?.nodes?.find((node) => node.id === id))
+      .filter(Boolean);
+    if (fromNode && toNode) {
+      setTravelMarkup(buildReadableTravelOverlayMarkup(fromNode, toNode, previous.viewport || viewport, { routeNodes }));
+      const timer = window.setTimeout(() => setTravelMarkup(""), Math.max(820, Number(routeNodes?.length || 2) * 260));
+      previousGraphRef.current = { currentId, graph, viewport };
+      return () => window.clearTimeout(timer);
+    }
+    previousGraphRef.current = { currentId, graph, viewport };
+    setTravelMarkup("");
+  }, [current?.id, graphKey]);
+
+  useEffect(() => {
+    previousGraphRef.current = { currentId: projectionNodeRef(current), graph, viewport };
+  }, [viewport.x, viewport.y, viewport.scale]);
+
+  useEffect(() => {
+    if (!command?.command) return;
+    if (command.command === "graph:fit") setViewport(fitGraphViewport(graph.nodes));
+    if (command.command === "graph:reset") setViewport(DEFAULT_GRAPH_VIEWPORT);
+    if (command.command === "graph:zoom-in") setViewport((value) => scaleGraphViewport(value, 1.18));
+    if (command.command === "graph:zoom-out") setViewport((value) => scaleGraphViewport(value, 0.84));
+  }, [command, graph.nodes]);
+
+  function panBy(x, y) {
+    setViewport((value) => ({ ...value, x: value.x + x, y: value.y + y }));
+  }
+
+  function handleWheel(event) {
+    event.preventDefault();
+    setViewport((value) => scaleGraphViewport(value, event.deltaY < 0 ? 1.1 : 0.9));
+  }
+
+  function handlePointerDown(event) {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    panRef.current = { x: event.clientX, y: event.clientY };
+    setPanning(true);
+  }
+
+  function handlePointerMove(event) {
+    if (!panRef.current) return;
+    const next = { x: event.clientX, y: event.clientY };
+    const previous = panRef.current;
+    panRef.current = next;
+    panBy(next.x - previous.x, next.y - previous.y);
+  }
+
+  function endPan(event) {
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    panRef.current = null;
+    setPanning(false);
+  }
+
+  if (!graphNodes.length) {
     return (
       <div className="empty-panel">
         <h2>No nodes yet.</h2>
@@ -725,13 +1195,47 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
   }
 
   return (
-    <div className={`graph-wrap ${linkMode ? "linking" : ""}`}>
+    <div className={`graph-wrap ${linkMode ? "linking" : ""} ${panning ? "panning" : ""}`}>
+      <div className="graph-tools" aria-label="Graph projection controls">
+        <button type="button" onClick={() => setViewport(fitGraphViewport(graph.nodes))}>Fit</button>
+        <button type="button" aria-label="Zoom out" onClick={() => setViewport((value) => scaleGraphViewport(value, 0.84))}>-</button>
+        <button type="button" onClick={() => setViewport(DEFAULT_GRAPH_VIEWPORT)}>Reset</button>
+        <button type="button" aria-label="Zoom in" onClick={() => setViewport((value) => scaleGraphViewport(value, 1.18))}>+</button>
+      </div>
+      <div className="graph-depth-tools" aria-label="Graph hop depth">
+        {[1, 2, 3, 4].map((depth) => (
+          <button
+            key={depth}
+            type="button"
+            className={graphDepth === depth ? "active" : ""}
+            onClick={() => setGraphDepth(depth)}
+          >
+            {depth} hop{depth === 1 ? "" : "s"}
+          </button>
+        ))}
+      </div>
+      <div className="graph-pan-tools" aria-label="Pan graph">
+        <button type="button" aria-label="Pan up" onClick={() => panBy(0, 58)}>^</button>
+        <button type="button" aria-label="Pan left" onClick={() => panBy(58, 0)}>{"<"}</button>
+        <button type="button" aria-label="Pan right" onClick={() => panBy(-58, 0)}>{">"}</button>
+        <button type="button" aria-label="Pan down" onClick={() => panBy(0, -58)}>v</button>
+      </div>
       {linkMode && (
         <div className="graph-instruction">
           {linkMode.source ? `Target for ${linkMode.source.title || linkMode.source.id}` : "Click the source node for this relationship."}
         </div>
       )}
-      <svg className="graph-svg" viewBox="0 0 900 620" role="img" aria-label="Workspace substrate graph">
+      <svg
+        className="graph-svg"
+        viewBox="0 0 900 620"
+        role="img"
+        aria-label="Workspace substrate graph"
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
+      >
         <defs>
           {graph.edges.map((edge) => (
             <marker
@@ -748,10 +1252,10 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
             </marker>
           ))}
           {graph.nodes.map((node) => {
-            const colors = node.style.fills;
+            const colors = node.style?.fills || [];
             if (colors.length < 2) return null;
             return (
-              <linearGradient id={nodeGradientId(node)} key={node.key} x1="0%" y1="0%" x2="100%" y2="100%">
+              <linearGradient id={nodeGradientId(node)} key={node.id || node.key} x1="0%" y1="0%" x2="100%" y2="100%">
                 {colors.map((color, index) => (
                   <stop key={`${color}-${index}`} offset={`${Math.round((index / Math.max(1, colors.length - 1)) * 100)}%`} stopColor={color} />
                 ))}
@@ -759,37 +1263,99 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
             );
           })}
         </defs>
-        {graph.edges.map((edge) => (
-          <g key={edge.key}>
-            <path
-              className="edge"
-              d={projectionEdgePath(edge)}
-              stroke={edge.style.color}
-              strokeDasharray={edge.style.dash}
-              strokeWidth={edge.style.strokeWidth}
-              markerEnd={`url(#${edgeMarkerId(edge)})`}
-            />
-            <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
-              {humanizeRelationship(edge.type)}
-            </text>
-          </g>
-        ))}
-        {graph.nodes.map((node) => (
-          <g
-            key={node.key}
-            className={`graph-node ${node.selected ? "selected" : ""}`}
-            transform={`translate(${node.x} ${node.y})`}
-            onClick={() => onSelect(node.source)}
-          >
-            <circle
-              r={node.selected ? 46 : 32}
-              fill={nodeFill(node)}
-              stroke={node.style.outline}
-            />
-            <text textAnchor="middle" y="-3" fill={node.style.text}>{trimLabel(node.title, node.selected ? 24 : 16)}</text>
-            <text className="graph-type" textAnchor="middle" y="15" fill={node.style.text}>{node.type || "node"}</text>
-          </g>
-        ))}
+        <rect className="graph-pan-surface" x="0" y="0" width="900" height="620" />
+        <g className="graph-layer" transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`}>
+          {graph.edges.map((edge) => {
+            const targetInset = Math.max(22, Number(edge.target?.r || 24) + 8);
+            const sourceInset = Math.max(12, Number(edge.source?.r || 24) + 3);
+            return (
+            <g key={edge.key} opacity={edge.opacity ?? 1}>
+              <path
+                className="edge"
+                d={projectionEdgePath(edge, { sourceInset, targetInset })}
+                stroke={edge.style.color}
+                strokeDasharray={edge.style.dash}
+                strokeWidth={edge.style.strokeWidth}
+              />
+              <polygon
+                className="edge-arrow"
+                points={projectionEdgeArrowPoints(edge, 10, targetInset).map(([x, y]) => `${x},${y}`).join(" ")}
+                fill={edge.style.color}
+                opacity={edge.arrowOpacity ?? edge.opacity ?? 1}
+              />
+              {edge.showLabel !== false && (
+                <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
+                  {edge.label || humanizeRelationship(edge.type)}
+                </text>
+              )}
+            </g>
+          );})}
+          {graph.nodes.map((node) => {
+            const radius = node.r || (node.selected ? 46 : 32);
+            const mediaSrc = node.image || "";
+            const hasMedia = Boolean(mediaSrc);
+            const labelLines = wrapProjectionText(node.title || node.id || "Untitled", { maxCharsPerLine: node.selected ? 18 : 16 });
+            const chipText = node.subtype ? `${node.type || "node"} / ${node.subtype}` : (node.type || "node");
+            const typeLabel = node.showType === false ? "" : chipText;
+            const longestLabelLine = Math.max(8, ...labelLines.map((line) => line.length));
+            const labelWidth = Math.max(72, Math.min(240, longestLabelLine * 8 + 22));
+            const labelHeight = Math.max(22, labelLines.length * 14 + 8);
+            const typeWidth = Math.max(54, Math.min(132, typeLabel.length * 6.2 + 18));
+            const labelY = -radius - labelHeight - 8;
+            const typeY = radius + 4;
+            const iconLabel = node.style?.projection?.iconLabel || String(node.type || "node").slice(0, 2).toUpperCase();
+            const iconAssetSrc = NODE_TYPE_ICON_URLS[node.type || ""];
+            const imageRadius = Math.max(8, radius - 7);
+            const clipId = `studio-node-clip-${String(node.id || node.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
+            return (
+            <g
+              key={node.id || node.key}
+              className={`graph-node ${node.selected ? "selected" : ""} distance-${node.distance || 0}`}
+              transform={`translate(${node.x} ${node.y})`}
+              opacity={node.opacity ?? 1}
+              style={{ "--graph-depth-opacity": node.opacity ?? 1 }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onSelect(node.source || node)}
+            >
+              <circle
+                r={radius}
+                fill={nodeFill(node)}
+                stroke={node.style.outline}
+                strokeOpacity={node.strokeOpacity ?? node.opacity ?? 1}
+              />
+              {hasMedia ? (
+                <>
+                  <clipPath id={clipId}>
+                    <circle r={imageRadius} />
+                  </clipPath>
+                  <image className="graph-node-media" href={mediaSrc} x={-imageRadius} y={-imageRadius} width={imageRadius * 2} height={imageRadius * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clipId})`} />
+                </>
+              ) : iconAssetSrc ? (
+                <image className="graph-node-type-media" href={iconAssetSrc} x={-imageRadius} y={-imageRadius} width={imageRadius * 2} height={imageRadius * 2} preserveAspectRatio="xMidYMid meet" />
+              ) : (
+                <text className="graph-node-icon" textAnchor="middle" y="8" fill={node.style?.text || "#06131a"}>{iconLabel}</text>
+              )}
+              {node.showLabel !== false && (
+                <g className="graph-node-title-chip graph-node-title-chip--top" opacity={node.labelOpacity ?? 1}>
+                  <rect x={-labelWidth / 2} y={labelY} width={labelWidth} height={labelHeight} rx="6" />
+                  <text className="graph-node-title" textAnchor="middle" y={labelY + 15}>
+                    {labelLines.map((line, index) => (
+                      <tspan key={`${line}-${index}`} x="0" dy={index === 0 ? 0 : 14}>{line}</tspan>
+                    ))}
+                  </text>
+                </g>
+              )}
+              {typeLabel && (
+                <g className="graph-type-badge" opacity={Math.min(0.76, node.labelOpacity ?? 1)}>
+                  <rect x={-typeWidth / 2} y={typeY} width={typeWidth} height="18" rx="9" />
+                  <text className="graph-type" textAnchor="middle" y={typeY + 13}>{typeLabel}</text>
+                </g>
+              )}
+            </g>
+          );
+          })}
+        </g>
+        <g className="graph-travel-layer" dangerouslySetInnerHTML={{ __html: travelMarkup }} />
       </svg>
       <div className="graph-caption">
         {caption}
@@ -798,19 +1364,29 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode }) {
   );
 }
 
-function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs, compact = false }) {
+function PreviewView({ previewUrl, startPreview, rebuildPreview, stopPreview, logs, compact = false }) {
   if (!previewUrl) {
     return (
       <div className="empty-panel">
         <h2>Hugo preview is not running.</h2>
-        <p>Start the local Hugo server when you want to inspect that projection layer.</p>
+        <p>Start the local Hugo server and XanaNode will open the site in your default browser.</p>
         <button className="primary" onClick={startPreview}>Start Hugo Preview</button>
       </div>
     );
   }
   return (
     <div className={`preview-shell ${compact ? "compact" : ""}`}>
-      <iframe ref={iframeRef} className="preview-frame" src={previewUrl} title="XanaNode Hugo Preview" onLoad={onFrameLoad} />
+      <div className="empty-panel preview-status">
+        <h2>Hugo preview is running in your browser.</h2>
+        <p>
+          The server stays live in the background so the Studio canvas can stay focused on the graph and editor.
+        </p>
+        <div className="preview-actions">
+          <button className="primary" onClick={rebuildPreview}>Rebuild Hugo</button>
+          <button onClick={stopPreview}>Stop Hugo</button>
+        </div>
+        <p className="muted">{previewUrl}</p>
+      </div>
       {!compact && <div className="preview-debug">
         <div className="panel-title">Preview Logs</div>
         <pre className="preview-log-stream">{logs.length ? logs.join("") : "Waiting for preview activity..."}</pre>
@@ -819,7 +1395,7 @@ function PreviewView({ previewUrl, startPreview, iframeRef, onFrameLoad, logs, c
   );
 }
 
-function HealthView({ status, refreshStatus }) {
+function HealthView({ status, refreshStatus, onRemoveImport, onToggleMountedNode }) {
   if (!status) {
     return (
       <div className="empty-panel">
@@ -841,6 +1417,43 @@ function HealthView({ status, refreshStatus }) {
         <section className="panel-card">
           <div className="panel-title">Issues</div>
           {issues.length ? issues.map((issue, i) => <div className="issue" key={i}>{formatIssue(issue)}</div>) : <p className="muted">No issues reported.</p>}
+        </section>
+        <section className="panel-card">
+          <div className="panel-title">Intertwingle Review</div>
+          {status.intake_reviews?.length ? status.intake_reviews.map((review, index) => (
+            <details className="issue" key={review.import?.id || index} open={index === 0}>
+              <summary>
+                <strong>{review.import?.name || review.import?.id || "Mounted substrate"}</strong>
+              </summary>
+              <div className="muted">
+                {review.intake?.merge_candidates?.length || 0} merge candidates, {review.intake?.new_nodes?.length || 0} new nodes, {review.intake?.relationship_imports?.length || 0} incoming relationships, {review.intake?.autolinks?.length || 0} link suggestions, {review.intake?.transclusions?.length || 0} transclusion suggestions.
+              </div>
+              <div className="relationship-actions">
+                <button type="button" onClick={() => onRemoveImport?.(review.import?.id)}>Remove mounted substrate</button>
+              </div>
+              {review.import?.disabled_node_ids?.length ? (
+                <p className="muted">{review.import.disabled_node_ids.length} node(s) currently hidden from this workspace.</p>
+              ) : null}
+              <div className="mounted-node-list">
+                {(review.import?.all_nodes || []).slice(0, 60).map((node) => {
+                  const checked = !(review.import?.disabled_node_ids || []).includes(node.id);
+                  return (
+                    <label className="checkbox-row" key={node.id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => onToggleMountedNode?.(review.import?.id, node.id, event.target.checked)}
+                      />
+                      <span>
+                        <strong>{node.title || node.id}</strong>
+                        <small>{node.type || "node"}</small>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </details>
+          )) : <p className="muted">No mounted substrate intake reviews yet.</p>}
         </section>
         <section className="panel-card">
           <div className="panel-title">Validation</div>
@@ -896,17 +1509,29 @@ function SelectorChips({ values, selected, emptyLabel, onToggle }) {
   );
 }
 
-function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, startRelationshipLink, saveNode }) {
+function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRelationship, startRelationshipLink, duplicateNode, saveNode, deleteNode }) {
   const [relationshipType, setRelationshipType] = useState("related_to");
   const [relationshipCategory, setRelationshipCategory] = useState("all");
   const [relationshipTarget, setRelationshipTarget] = useState("");
   const [relationshipQuery, setRelationshipQuery] = useState("");
+  const readOnlyNode = !draft ? selectedNode : null;
 
-  if (!draft) {
+  if (!draft && !readOnlyNode) {
     return (
       <div className="editor-empty">
         <h2>No node selected</h2>
         <p>Select a node from the catalog or create a new one.</p>
+      </div>
+    );
+  }
+
+  if (!draft && readOnlyNode) {
+    return (
+      <div className="editor-empty">
+        <h2>{readOnlyNode.title || readOnlyNode.id || "Mounted node"}</h2>
+        <p>This node comes from an intertwingled substrate that is currently mounted into your workspace.</p>
+        <p>Review it here, then decide whether to keep it mounted, merge it into your local authorship, or remove it later.</p>
+        <button className="primary" onClick={duplicateNode}>Duplicate into this workspace</button>
       </div>
     );
   }
@@ -927,9 +1552,17 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
       .some((value) => String(value).toLowerCase().includes(query));
   });
   const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
+  const trailSequence = Array.isArray(frontMatter.nodes) ? frontMatter.nodes : [];
+  const availableTrailTargets = nodes.filter((node) => projectionNodeRef(node) !== projectionNodeRef(draft));
+  const localNodePath = resolveNodeFilePath(draft);
 
   function updateFrontMatter(key, value) {
     setDraft({ ...draft, frontMatter: { ...frontMatter, [key]: value } });
+  }
+
+  function updateSharing(patch) {
+    const currentSharing = frontMatter.sharing && typeof frontMatter.sharing === "object" ? frontMatter.sharing : {};
+    updateFrontMatter("sharing", { ...currentSharing, ...patch });
   }
 
   function updateListFrontMatter(key, value) {
@@ -955,6 +1588,28 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
     updateFrontMatter("relationships", relationships.filter((_, relationshipIndex) => relationshipIndex !== index));
   }
 
+  function updateTrailSequence(nextSequence) {
+    updateFrontMatter("nodes", nextSequence.filter(Boolean));
+  }
+
+  function addTrailNode(target) {
+    if (!target) return;
+    if (trailSequence.includes(target)) return;
+    updateTrailSequence([...trailSequence, target]);
+  }
+
+  function moveTrailNode(index, direction) {
+    const next = [...trailSequence];
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= next.length) return;
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+    updateTrailSequence(next);
+  }
+
+  function removeTrailNode(index) {
+    updateTrailSequence(trailSequence.filter((_, itemIndex) => itemIndex !== index));
+  }
+
   return (
     <div className="editor-panel">
       <div className="panel-row sticky-editor-head">
@@ -962,7 +1617,11 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
           <div className="panel-title">Node Editor</div>
           <div className="small muted">{frontMatter.id || draft.id || draft.relativePath || "new node"}</div>
         </div>
-        <button className="primary" onClick={saveNode}>Save Node</button>
+        <div className="panel-actions">
+          <button onClick={duplicateNode}>Duplicate</button>
+          {localNodePath && <button className="danger" onClick={deleteNode}>Remove Node</button>}
+          <button className="primary" onClick={saveNode}>Save Node</button>
+        </div>
       </div>
 
       <FieldLabel help="The name people see first. Keep it human: a person, question, claim, source, place, event, or thing someone can point to." href={canonicalHelpUrl("property", "title")}>Title</FieldLabel>
@@ -1002,8 +1661,103 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
       <FieldLabel help="A short human sentence that tells readers why this node exists. If the graph only showed this line, it should still make sense." href={canonicalHelpUrl("property", "summary")}>Summary</FieldLabel>
       <textarea rows={3} value={frontMatter.summary || ""} onChange={(e) => updateFrontMatter("summary", e.target.value)} />
 
+      <section className="editor-section">
+        <div className="panel-row">
+          <div className="panel-title">Authoring State</div>
+          <HelpHint title="Authoring State" href={canonicalHelpUrl("concept", "federated-knowledge-substrates")}>
+            Draft keeps a node out of normal builds unless drafts are explicitly included. Shareable controls whether this node is exported into public protocol artifacts by default.
+          </HelpHint>
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={Boolean(frontMatter.draft)}
+            onChange={(event) => updateFrontMatter("draft", event.target.checked || undefined)}
+          />
+          <span>
+            <strong>Draft only</strong>
+            <small>Keep this node local to working builds until you choose to publish it.</small>
+          </span>
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={frontMatter.sharing?.shareable !== false}
+            onChange={(event) => updateSharing({
+              shareable: event.target.checked,
+              scope: event.target.checked ? (frontMatter.sharing?.scope || "public") : "private"
+            })}
+          />
+          <span>
+            <strong>Share in exported .substrate files</strong>
+            <small>Turn this off for private or local-only nodes.</small>
+          </span>
+        </label>
+        <FieldLabel help="Scope is the export intent for this node. Public nodes ship by default. Private nodes stay local unless you explicitly include private content." href={canonicalHelpUrl("property", "sharing")}>Sharing scope</FieldLabel>
+        <select
+          value={frontMatter.sharing?.scope || (frontMatter.sharing?.shareable === false ? "private" : "public")}
+          onChange={(event) => updateSharing({
+            scope: event.target.value,
+            shareable: event.target.value !== "private"
+          })}
+        >
+          <option value="public">Public</option>
+          <option value="private">Private</option>
+          <option value="restricted">Restricted</option>
+        </select>
+      </section>
+
       <FieldLabel help="The authored prose for this node. Relationships, sources, and transclusions should carry the structure around it instead of forcing everything into text." href={canonicalHelpUrl("property", "content")}>Content</FieldLabel>
       <textarea className="body-editor" value={draft.body || ""} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+
+      {type === "trail" && (
+        <section className="editor-section">
+          <div className="panel-row">
+            <div className="panel-title">Trail Sequence</div>
+            <HelpHint title="Trail Sequence" href={canonicalHelpUrl("concept", "trail")}>
+              Trails are ordered paths. Pick the nodes in sequence and Studio will keep the trail structure aligned when you save.
+            </HelpHint>
+          </div>
+          <div className="relationship-form">
+            <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
+              <option value="">Choose node for trail</option>
+              {availableTrailTargets.map((node) => <option value={projectionNodeRef(node)} key={`trail-${nodeKey(node)}`}>{node.title || node.id}</option>)}
+            </select>
+            <button
+              type="button"
+              disabled={!relationshipTarget}
+              onClick={() => {
+                addTrailNode(relationshipTarget);
+                setRelationshipTarget("");
+              }}
+            >
+              Add to trail
+            </button>
+          </div>
+          {trailSequence.length ? (
+            <div className="trail-sequence-list">
+              {trailSequence.map((target, index) => {
+                const targetNode = findWorkspaceNode(target, nodes);
+                return (
+                  <div className="relationship-chip" key={`${target}-${index}`}>
+                    <div className="relationship-chip-main">
+                      <strong>{index + 1}. {targetNode?.title || target}</strong>
+                      <small>{targetNode?.type || ""}</small>
+                    </div>
+                    <div className="relationship-chip-actions">
+                      <button type="button" onClick={() => moveTrailNode(index, -1)} disabled={index === 0}>Up</button>
+                      <button type="button" onClick={() => moveTrailNode(index, 1)} disabled={index === trailSequence.length - 1}>Down</button>
+                      <button type="button" onClick={() => removeTrailNode(index)}>Remove</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">This trail is empty. Add nodes in the order you want readers to follow them.</p>
+          )}
+        </section>
+      )}
 
       <section className="editor-section">
         <div className="panel-row">
@@ -1058,7 +1812,7 @@ function EditorPanel({ draft, setDraft, nodes, suggestions, addRelationship, sta
         <div className="relationship-form">
           <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
             <option value="">Choose target</option>
-            {nodes.map((node) => <option value={node.id || node.slug || node.title} key={nodeKey(node)}>{node.title || node.id}</option>)}
+            {nodes.map((node) => <option value={projectionNodeRef(node)} key={nodeKey(node)}>{node.title || node.id}</option>)}
           </select>
           <button disabled={!relationshipTarget} onClick={() => {
             addRelationship(relationshipType, relationshipTarget);
@@ -1147,11 +1901,85 @@ function relationshipLabel(type) {
   return definition ? `${definition.label} (${definition.type})` : type || "related_to";
 }
 
-function buildLocalGraph(nodes, current) {
-  return buildGraphProjection(nodes, relationshipsFromProjectionNodes(nodes), {
-    current,
-    registry: GRAPH_PROJECTION_REGISTRY
+function buildLocalGraph(nodes, current, maxDepth = 1) {
+  const projectedNodes = nodes.map((node) => ({
+    ...node,
+    id: projectionNodeRef(node),
+    source: node
+  }));
+  const focusId = projectionNodeRef(current) || projectedNodes[0]?.id || "";
+  const relationships = relationshipsFromProjectionNodes(projectedNodes);
+  const neighborhood = buildHopNeighborhood(projectedNodes, relationships, {
+    focusId,
+    maxDepth,
+    edgeScore: (edge) => scoreGraphEdge(edge, projectedNodes, focusId)
   });
+  const graph = layoutReadableProjection(neighborhood, {
+    focusId,
+    registry: GRAPH_PROJECTION_REGISTRY,
+    width: 900,
+    height: 620,
+    maxDepth,
+    labelForEdge: (edge) => humanizeRelationship(edge.type || "related_to")
+  });
+  return {
+    ...graph,
+    hasVisibleEdges: graph.edges.length > 0
+  };
+}
+
+function buildEffectiveGraphNodes(nodes, draft, selectedNode) {
+  const baseNodes = Array.isArray(nodes) ? [...nodes] : [];
+  if (!draft) return baseNodes;
+
+  const draftNode = {
+    ...draft,
+    ...extractFrontMatterShape(draft),
+    body: draft.body || draft.content || "",
+    frontMatter: draft.frontMatter || extractFrontMatterShape(draft)
+  };
+  const draftRef = projectionNodeRef(draftNode);
+  const selectedRef = projectionNodeRef(selectedNode);
+  const replaceIndex = baseNodes.findIndex((node) => {
+    const nodeRef = projectionNodeRef(node);
+    return nodeRef && (nodeRef === draftRef || nodeRef === selectedRef || nodeKey(node) === nodeKey(draftNode));
+  });
+
+  if (replaceIndex >= 0) {
+    baseNodes.splice(replaceIndex, 1, {
+      ...baseNodes[replaceIndex],
+      ...draftNode,
+      id: baseNodes[replaceIndex].id || draftNode.id
+    });
+    return baseNodes;
+  }
+
+  return [...baseNodes, draftNode];
+}
+
+const DEFAULT_GRAPH_VIEWPORT = { x: 0, y: 0, scale: 1 };
+
+function fitGraphViewport(nodes) {
+  if (!nodes?.length) return DEFAULT_GRAPH_VIEWPORT;
+  const readableNodes = nodes.filter((node) => node.selected || Number(node.distance || 0) <= 1);
+  return fitReadableProjectionViewport(readableNodes.length ? readableNodes : nodes, {
+    padding: 86,
+    width: 900,
+    height: 620,
+    maxScale: 1.45,
+    minScale: 0.66
+  });
+}
+
+function scaleGraphViewport(viewport, factor) {
+  return {
+    ...viewport,
+    scale: clamp((viewport.scale || 1) * factor, 0.32, 3)
+  };
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function nodeFill(node) {
@@ -1172,9 +2000,74 @@ function humanizeRelationship(value) {
   return String(value || "related_to").replace(/_/g, " ");
 }
 
+function scoreGraphEdge(edge, nodes, focusId) {
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  const sourceImportance = Number(source?.importance || 3);
+  const targetImportance = Number(target?.importance || 3);
+  const weight = Number(edge.weight || 1);
+  const relationshipPriority = {
+    defines: 10,
+    created: 9,
+    created_by: 9,
+    participated_in: 8,
+    originated_by: 9,
+    coined: 9,
+    represented_by: 9,
+    used_as_primary_media_for: 9,
+    depicts: 9,
+    authored: 8,
+    features: 8,
+    featured_in: 8,
+    presented: 8,
+    presented_by: 8,
+    proposed: 7,
+    demonstrates: 7,
+    demonstrated_by: 7,
+    explains: 7,
+    explained_by: 7,
+    context_for: 6,
+    documents: 6,
+    extends: 6,
+    supports: 6,
+    supported_by: 6,
+    contrasts: 6,
+    depends_on: 6,
+    exposes: 6,
+    anticipates: 6,
+    contains: 6,
+    includes: 6,
+    uses: 5,
+    used_by: 5,
+    cites: 5,
+    related_to: 4,
+    related: 3,
+    mentions: 1,
+    unresolved_media: 1
+  };
+  const typePriority = relationshipPriority[edge.type] || 3;
+  const directBonus = edge.source === focusId || edge.target === focusId ? 20 : 0;
+  const explicitBonus = edge.origin === "relationship" ? 8 : 0;
+  const visibilityBonus = edge.visibility === "primary" ? 5 : edge.visibility === "secondary" ? 2 : 0;
+  return directBonus + explicitBonus + visibilityBonus + weight * 10 + typePriority + sourceImportance + targetImportance;
+}
+
 function trimLabel(value, max) {
   const text = String(value || "Untitled");
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
+}
+
+function projectionNodeRef(node) {
+  return normalizeNodeRef(
+    node?.protocolId
+    || node?.protocol_id
+    || node?.frontMatter?.protocol_id
+    || node?.data?.protocol_id
+    || node?.id
+    || node?.slug
+    || node?.title
+    || ""
+  );
 }
 
 function makeDraft(node) {
@@ -1197,6 +2090,33 @@ function extractFrontMatterShape(node) {
   if (node?.protocol_id && !result.protocol_id) result.protocol_id = node.protocol_id;
   if (!result.relationships) result.relationships = [];
   return result;
+}
+
+function normalizeFrontMatterForSave(frontMatter = {}) {
+  const next = { ...frontMatter };
+  if (next.type === "trail") {
+    const sequence = Array.isArray(next.nodes) ? next.nodes.filter(Boolean) : [];
+    const otherRelationships = Array.isArray(next.relationships)
+      ? next.relationships.filter((relationship) => !["starts_with", "continues_to"].includes(relationship?.type))
+      : [];
+    const trailRelationships = [];
+    if (sequence[0]) {
+      trailRelationships.push({
+        type: "starts_with",
+        target: sequence[0],
+        summary: "This trail begins here."
+      });
+    }
+    for (let index = 1; index < sequence.length; index += 1) {
+      trailRelationships.push({
+        type: "continues_to",
+        target: sequence[index],
+        summary: "This trail continues to the next node."
+      });
+    }
+    next.relationships = [...otherRelationships, ...trailRelationships];
+  }
+  return next;
 }
 
 function getSuggestions(node, nodes) {
@@ -1298,16 +2218,27 @@ function createUnavailableApi() {
   return {
     appMetadata: unavailable,
     openWorkspace: unavailable,
+    openSubstrateFile: unavailable,
+    openSubstrateFolder: unavailable,
+    intertwingleSubstrate: unavailable,
     openPack: unavailable,
     createWorkspace: unavailable,
     refreshWorkspace: unavailable,
     workspaceStatus: unavailable,
     createNode: unavailable,
     updateNode: unavailable,
+    openWorkspaceAtPath: unavailable,
+    planNodeDeletion: unavailable,
+    deleteNode: unavailable,
     importAssets: unavailable,
     saveSnapshot: unavailable,
     build: unavailable,
+    exportSubstrate: unavailable,
     exportPack: unavailable,
+    removeImport: unavailable,
+    toggleImportNodeVisibility: unavailable,
+    listFederationTargets: unavailable,
+    openFederationTarget: unavailable,
     validate: unavailable,
     openInShell: unavailable,
     startHugoPreview: unavailable,
@@ -1315,8 +2246,100 @@ function createUnavailableApi() {
     stopHugoPreview: unavailable,
     readTextFile: unavailable,
     onPreviewLog: () => {},
-    onPreviewStopped: () => {}
+    onPreviewStopped: () => {},
+    onStudioCommand: () => {}
   };
+}
+
+function loadRecentWorkspaces() {
+  try {
+    const raw = window.localStorage.getItem("xananode.recentWorkspaces");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentWorkspaces(items) {
+  try {
+    window.localStorage.setItem("xananode.recentWorkspaces", JSON.stringify(items.slice(0, 8)));
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
+function refreshRecentWorkspace(items, workspace) {
+  const next = normalizeRecentWorkspace(workspace);
+  if (!next) return items;
+  const filtered = (items || []).filter((item) => item.rootDir !== next.rootDir);
+  const nextItems = [next, ...filtered].slice(0, 8);
+  saveRecentWorkspaces(nextItems);
+  return nextItems;
+}
+
+function rememberRecentWorkspace(workspace, setRecentWorkspaces) {
+  if (!workspace?.rootDir) return;
+  setRecentWorkspaces((items) => refreshRecentWorkspace(items, workspace));
+}
+
+function clearRecentWorkspaces() {
+  try {
+    window.localStorage.removeItem("xananode.recentWorkspaces");
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
+function normalizeRecentWorkspace(workspace) {
+  if (!workspace?.rootDir) return null;
+  return {
+    rootDir: workspace.rootDir,
+    name: workspace.manifest?.name || workspace.manifest?.id || pathBaseName(workspace.rootDir),
+    manifestName: workspace.manifest?.name || workspace.manifest?.id || "",
+    updatedAt: Date.now()
+  };
+}
+
+function pathBaseName(target) {
+  const clean = String(target || "").replace(/[\\/]+$/, "");
+  return clean.split(/[\\/]/).filter(Boolean).pop() || clean || "";
+}
+
+function resolveWorkspaceRootDir(result) {
+  return result?.workspace?.rootDir || result?.rootDir || result?.workspace?.manifest?.rootDir || null;
+}
+
+function formatDeletionWarning(plan) {
+  if (!plan?.target) return "Remove this node from the open substrate?";
+  const lines = [
+    `Remove "${plan.target.title || plan.target.id}" from this substrate?`
+  ];
+  if (Array.isArray(plan.warnings) && plan.warnings.length) {
+    lines.push("");
+    lines.push(...plan.warnings.map((warning) => `- ${warning}`));
+  }
+  if (Array.isArray(plan.affected_nodes) && plan.affected_nodes.length) {
+    lines.push("");
+    lines.push(`Affected nodes: ${plan.affected_nodes.slice(0, 6).map((entry) => entry.node?.title || entry.node?.id).join(", ")}${plan.affected_nodes.length > 6 ? `, and ${plan.affected_nodes.length - 6} more` : ""}`);
+  }
+  lines.push("");
+  lines.push("This will remove the node and clean up local relationships and trail references that point to it.");
+  return lines.join("\n");
+}
+
+function resolveNodeFilePath(node) {
+  return node?.relativePath
+    || node?.relativeFile
+    || node?.path
+    || node?.filePath
+    || node?.__file
+    || node?.frontMatter?.relativePath
+    || node?.frontMatter?.relativeFile
+    || node?.frontMatter?.path
+    || node?.frontMatter?.filePath
+    || node?.frontMatter?.__file
+    || null;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

@@ -1,5 +1,7 @@
 # XanaNode Studio
 
+Created by [Christian Siefen](https://xananode.com/) for the [XanaNode project](https://xananode.com/).
+
 Local-first desktop studio for making and maintaining XanaNode substrates.
 
 Studio is where an author can shape a substrate directly: create a node, choose what kind of thing it is, connect it to other nodes with named relationships, check the work, and preview how the substrate can be projected for readers.
@@ -30,7 +32,7 @@ Hugo also depends on Core directly. That is intentional: people who use the Hugo
   - center: graph projection, Hugo projection, health, and logs
   - right: node editor
 - Open existing workspace
-- Open an existing substrate pack as a local working copy
+- Intertwingle an existing `.substrate`, substrate folder, or registry-cloned substrate as a local working copy
 - Create new workspace
 - Create nodes
 - Edit node title, type, subtype, facets, summary, and content
@@ -38,13 +40,21 @@ Hugo also depends on Core directly. That is intentional: people who use the Hugo
 - Click two graph nodes to draft a relationship visually
 - Import media/source assets through the Workspace API
 - Build substrate artifacts through Workspace/Core
-- Export portable substrate packs for Hugo or other projection layers
+- Export portable `.substrate` archives for Hugo or other projection layers
 - Run validation/health checks
 - Save Git snapshots using friendlier language
 - Start/stop local Hugo preview and embed it in the center panel
-- Git submodule dependencies on `XanaNode-Workspace` and `XanaNode-Hugo`
+- live bridged dependencies on `XanaNode-Workspace`, `XanaNode-Core-SDK`, and `XanaNode-Hugo` during shared local development
 
 ## Install
+
+```bash
+npm run dev:bootstrap
+```
+
+That is the preferred setup when Studio lives inside `XanaNode-Master`. It links Studio's vendor paths back to the live sibling repos, then installs the root workspace dependencies once.
+
+For a standalone Studio clone, the fallback setup is still:
 
 ```bash
 git submodule update --init --recursive
@@ -83,9 +93,11 @@ Studio is not replacing Hugo. Hugo remains the public website projection for now
 
 Studio is also not trying to make Git the user experience. Git is used underneath as the default versioning layer, but the UI should speak in terms like **Save Snapshot**, **History**, **Publish**, and **Propose Change**.
 
-Studio's **Open Pack** button lets you pick a pack folder, `substrate.json`, or another JSON file inside a pack. Studio creates an editable **working copy** under `Documents/XanaNode Studio Workspaces`.
+Studio's **Intertwingle .substrate** action lets you pick a `.substrate` archive, a substrate folder, `substrate.json`, or another JSON file inside a substrate. If you already have a workspace open, Studio mounts that incoming substrate into the current workspace and keeps your local nodes in place. If no workspace is open yet, Studio can still open the incoming substrate as its own editable **working copy** under `Documents/XanaNode Studio Workspaces`.
 
-If the pack came from another author or from the XanaNode Canonical pack, Studio keeps the source node IDs and records the source pack. Your changes are local **proposals** until the source substrate owner accepts them. In Studio language, a **pack** is the portable bundle, a **working copy** is your editable local copy, a **proposal** is an edit against a substrate you do not directly govern, and a **snapshot** is the local save point.
+The long-term flow is registry-first. The protocol registry lists known online federation targets, Workspace knows how to validate and clone them, and Studio should present that registry through Workspace rather than teaching users a separate import model. The thing being brought in is always another substrate, whether it arrived as a folder, a Git checkout, or a `.substrate` bundle.
+
+If the incoming substrate came from another author or from the XanaNode Canonical substrate, Studio keeps the source node IDs and records the source substrate. Your changes are local **proposals** until the source substrate owner accepts them. In Studio language, **Intertwingle** means bringing another substrate into your local authoring context without silently claiming ownership. A **working copy** is your editable local copy when you intentionally open a substrate on its own, a **mounted substrate** is a temporary federated layer inside your current workspace, a **proposal** is an edit against a substrate you do not directly govern, and a **snapshot** is the local save point.
 
 The demo workspace starts with a plain question: **How do you make a campfire?** That small example is there on purpose. It shows that a substrate can start with an everyday inquiry, then grow into claims, evidence, sources, safety gaps, and relationships.
 
@@ -95,21 +107,24 @@ The demo workspace starts with a plain question: **How do you make a campfire?**
 2. Load the XanaNode Canonical substrate as a built-in manual graph.
 3. Add author profile setup wizard.
 4. Add Git history and visual diff UI.
-5. Add import manager for federated substrates.
+5. Add substrate manager for mounted, unmounted, and intertwingled substrates.
 6. Add media preview and source extraction.
 7. Add AI/co-pilot integration as an optional provider interface.
 8. Add native packaging through Electron Forge or Tauri alternative.
 
 ## Dependency Wiring
 
-Studio uses Git submodules for XanaNode packages that live in their own repos:
+Inside `XanaNode-Master`, Studio should behave like part of one local development workspace. The effective local bridge is:
 
 ```text
-vendor/xananode-hugo
-vendor/xananode-workspace-repo
+vendor/xananode-workspace-repo -> XanaNode-Workspace
+vendor/xananode-core -> XanaNode-Core-SDK
+vendor/xananode-hugo -> XanaNode-Hugo
 ```
 
-Hugo and Workspace both carry Core SDK as their own submodule, and Core SDK carries the protocol repo as its own submodule:
+Workspace and Hugo still carry their own fallback Core paths, and Core still carries its fallback Protocol path. For shared local development, the root bridge makes those resolve to the live sibling repositories.
+
+The older standalone-clone layout is still:
 
 ```text
 XanaNode-Studio
@@ -121,9 +136,9 @@ XanaNode-Studio
       vendor/xananode-protocol -> XanaNode
 ```
 
-Hugo carries Core directly because Hugo must work for people who never open Studio. Workspace carries Core because it owns local substrate management, build orchestration, and health workflows. Both Core submodule pointers should track the same upstream Core SDK line.
+Hugo carries Core directly because Hugo must work for people who never open Studio. Workspace carries Core because it owns local substrate management, build orchestration, and health workflows. Studio now also links Core directly in local development so its graph projection and protocol assets do not depend on Workspace's internal folder shape.
 
-After cloning, initialize everything with:
+After cloning Studio by itself, initialize everything with:
 
 ```bash
 git submodule update --init --recursive
@@ -136,4 +151,4 @@ The package dependency is:
 "@xananode/workspace": "file:./vendor/xananode-workspace-repo"
 ```
 
-Studio invokes the Hugo renderer from `vendor/xananode-hugo` when available. The preview process prepares Hugo artifacts first and falls back to Core build output only if the Hugo prepare step fails.
+Studio invokes the Hugo renderer from `vendor/xananode-hugo` when available. In the shared local workspace that path is linked to the live `XanaNode-Hugo` repo. The preview process prepares Hugo artifacts first and falls back to Core build output only if the Hugo prepare step fails.
