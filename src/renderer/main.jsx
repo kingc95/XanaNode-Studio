@@ -50,6 +50,8 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [intertwingleOpen, setIntertwingleOpen] = useState(false);
+  const [intertwingleBusy, setIntertwingleBusy] = useState(false);
+  const [intertwingleProgress, setIntertwingleProgress] = useState("");
   const [federationTargets, setFederationTargets] = useState([]);
   const [federationLoading, setFederationLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -76,9 +78,14 @@ function App() {
     const offStop = api.onPreviewStopped?.((message) => {
       setPreviewLogs((logs) => [...logs, `Hugo preview stopped: ${message.code ?? "unknown"}`]);
     });
+    const offWorkspaceProgress = api.onWorkspaceProgress?.((message) => {
+      if (!message?.message) return;
+      setIntertwingleProgress(String(message.message));
+    });
     return () => {
       offLog?.();
       offStop?.();
+      offWorkspaceProgress?.();
     };
   }, []);
 
@@ -122,6 +129,7 @@ function App() {
       } else if (command === "workspace:build") {
         run(() => api.build(), "Built substrate artifacts");
       } else if (command === "substrate:intertwingle" || command === "pack:open") {
+        setIntertwingleProgress("");
         setIntertwingleOpen(true);
       } else if (command === "substrate:registry") {
         openRegistry();
@@ -259,32 +267,45 @@ function App() {
   }
 
   async function intertwingleSubstrateFile() {
+    setIntertwingleBusy(true);
+    setIntertwingleProgress("Waiting for substrate file selection...");
     const result = await run(
       () => (api.openSubstrateFile ? api.openSubstrateFile() : api.intertwingleSubstrate ? api.intertwingleSubstrate() : api.openPack()),
       workspace ? "Mounted substrate into this workspace" : "Opened intertwingled substrate working copy"
     );
+    setIntertwingleBusy(false);
     if (result?.workspace) {
       setStatus(null);
       setSelectedNode(selectedNode || result.workspace.nodes?.[0] || null);
       setDraft(null);
       setCenterMode(workspace ? "health" : "graph");
+      setIntertwingleProgress(workspace ? "Substrate mounted." : "Substrate opened as a working copy.");
       setIntertwingleOpen(false);
+      setIntertwingleProgress("");
       rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
+    } else {
+      setIntertwingleProgress("");
     }
   }
 
   async function intertwingleSubstrateFolder() {
+    setIntertwingleBusy(true);
+    setIntertwingleProgress("Waiting for substrate folder selection...");
     const result = await run(
       () => (api.openSubstrateFolder ? api.openSubstrateFolder() : api.intertwingleSubstrate ? api.intertwingleSubstrate() : api.openPack()),
       workspace ? "Mounted substrate into this workspace" : "Opened intertwingled substrate working copy"
     );
+    setIntertwingleBusy(false);
     if (result?.workspace) {
       setStatus(null);
       setSelectedNode(selectedNode || result.workspace.nodes?.[0] || null);
       setDraft(null);
       setCenterMode(workspace ? "health" : "graph");
       setIntertwingleOpen(false);
+      setIntertwingleProgress("");
       rememberRecentWorkspace(result.workspace, setRecentWorkspaces);
+    } else {
+      setIntertwingleProgress("");
     }
   }
 
@@ -521,6 +542,28 @@ function App() {
     }
   }
 
+  function openMountedNode(nodeId) {
+    const node = findWorkspaceNode(nodeId, nodes);
+    if (!node) {
+      setNotice({ type: "error", text: `Mounted node not found: ${nodeId}` });
+      return;
+    }
+    setSelectedNode(node);
+    setDraft(node?.readOnly ? null : makeDraft(node));
+    setCenterMode("graph");
+  }
+
+  async function duplicateMountedNode(nodeId) {
+    const node = findWorkspaceNode(nodeId, nodes);
+    if (!node) {
+      setNotice({ type: "error", text: `Mounted node not found: ${nodeId}` });
+      return;
+    }
+    setSelectedNode(node);
+    setDraft(null);
+    await duplicateNodeFrom(node);
+  }
+
   async function startPreview() {
     const result = await run(() => api.startHugoPreview(), "Started Hugo preview");
     if (result?.url) {
@@ -576,8 +619,7 @@ function App() {
     return next;
   }
 
-  async function duplicateNode() {
-    const base = draft || selectedNode;
+  async function duplicateNodeFrom(base) {
     if (!base) return;
     const frontMatter = cloneFrontMatterForNewNode(base);
     const result = await run(
@@ -600,6 +642,11 @@ function App() {
       });
     }
     setCenterMode("graph");
+  }
+
+  async function duplicateNode() {
+    const base = draft || selectedNode;
+    await duplicateNodeFrom(base);
   }
 
   async function saveNode() {
@@ -775,6 +822,8 @@ function App() {
         <IntertwingleDialog
           targets={federationTargets}
           loading={federationLoading}
+          busy={intertwingleBusy}
+          progress={intertwingleProgress}
           onLocalFile={intertwingleSubstrateFile}
           onLocalFolder={intertwingleSubstrateFolder}
           onOpenRegistry={openRegistry}
@@ -883,7 +932,7 @@ function App() {
                 {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} />}
               </>
             )}
-                {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} />}
+                {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} onOpenNode={openMountedNode} onDuplicateNode={duplicateMountedNode} />}
             {centerMode === "logs" && <LogView logs={previewLogs} />}
           </section>
 
@@ -1044,7 +1093,7 @@ function SnapshotDialog({ defaultMessage, onSave, onClose }) {
   );
 }
 
-function IntertwingleDialog({ targets, loading, onLocalFile, onLocalFolder, onOpenRegistry, onOpenTarget, onClose }) {
+function IntertwingleDialog({ targets, loading, busy, progress, onLocalFile, onLocalFolder, onOpenRegistry, onOpenTarget, onClose }) {
   return (
     <div className="setup-backdrop">
       <div className="setup-panel">
@@ -1055,12 +1104,13 @@ function IntertwingleDialog({ targets, loading, onLocalFile, onLocalFolder, onOp
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
         </div>
-        <p className="setup-note">Choose a local `.substrate` bundle, a local substrate folder, or a known online substrate from the protocol registry.</p>
+        <p className="setup-note">Choose a local `.substrate`, `substrate-bundle.json`, `substrate-bundle.jsonl`, another substrate-shaped JSON file, a local substrate folder, or a known online substrate from the protocol registry.</p>
         <div className="setup-actions">
-          <button type="button" className="primary" onClick={onLocalFile}>Choose .substrate File</button>
-          <button type="button" onClick={onLocalFolder}>Choose Folder</button>
-          <button type="button" onClick={onOpenRegistry}>Refresh Online Registry</button>
+          <button type="button" className="primary" onClick={onLocalFile} disabled={busy}>Choose Substrate File</button>
+          <button type="button" onClick={onLocalFolder} disabled={busy}>Choose Folder</button>
+          <button type="button" onClick={onOpenRegistry} disabled={busy}>Refresh Online Registry</button>
         </div>
+        {(busy || progress) ? <p className="muted">{progress || "Working..."}</p> : null}
         <div className="editor-section">
           <div className="panel-title">Online Substrates</div>
           {loading ? <p className="muted">Loading registry targets...</p> : null}
@@ -1136,6 +1186,9 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
   const [graphDepth, setGraphDepth] = useState(1);
   const graphNodes = useMemo(() => buildEffectiveGraphNodes(nodes, draft, selectedNode), [nodes, draft, selectedNode]);
   const graph = useMemo(() => buildLocalGraph(graphNodes, current, graphDepth), [graphNodes, current, graphDepth]);
+  const graphDensity = useMemo(() => describeGraphDensity(graph), [graph]);
+  const denseGraph = graphDensity.mode === "dense";
+  const labeledNodeIds = useMemo(() => selectVisibleGraphLabels(graph, { dense: denseGraph }), [graph, denseGraph]);
   const graphKey = useMemo(() => graph.nodes.map((node) => node.id || node.key).join("|"), [graph.nodes]);
   const [viewport, setViewport] = useState(() => fitGraphViewport(graph.nodes));
   const [travelMarkup, setTravelMarkup] = useState("");
@@ -1143,7 +1196,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
   const panRef = useRef(null);
   const previousGraphRef = useRef({ currentId: projectionNodeRef(current), graph, viewport });
   const caption = graph.hasVisibleEdges
-    ? `${graph.nodes.length} visible nodes connected to ${current?.title || current?.id || "selected node"}`
+    ? `${graph.nodes.length} visible nodes connected to ${current?.title || current?.id || "selected node"}${denseGraph ? ` · dense view (${graphDensity.maxIncident} direct/incident connections at peak)` : ""}`
     : current
       ? `${graph.nodes.length} workspace nodes shown; no relationships connect to ${current.title || current.id || "the selected node"} yet`
       : `${graphNodes.length} workspace nodes`;
@@ -1269,20 +1322,6 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
         onPointerCancel={endPan}
       >
         <defs>
-          {graph.edges.map((edge) => (
-            <marker
-              id={edgeMarkerId(edge)}
-              key={`marker-${edge.key}`}
-              viewBox="0 0 10 10"
-              refX="8"
-              refY="5"
-              markerWidth="5"
-              markerHeight="5"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={edge.style.color} />
-            </marker>
-          ))}
           {graph.nodes.map((node) => {
             const colors = node.style?.fills || [];
             if (colors.length < 2) return null;
@@ -1315,7 +1354,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
                 fill={edge.style.color}
                 opacity={edge.arrowOpacity ?? edge.opacity ?? 1}
               />
-              {edge.showLabel !== false && (
+              {edge.showLabel !== false && !denseGraph && (
                 <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
                   {edge.label || humanizeRelationship(edge.type)}
                 </text>
@@ -1339,6 +1378,9 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
             const iconAssetSrc = NODE_TYPE_ICON_URLS[node.type || ""];
             const imageRadius = Math.max(8, radius - 7);
             const clipId = `studio-node-clip-${String(node.id || node.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
+            const nodeId = node.id || node.key;
+            const renderLabel = node.showLabel !== false && (!denseGraph || labeledNodeIds.has(nodeId));
+            const renderTypeLabel = typeLabel && (!denseGraph || node.selected);
             return (
             <g
               key={node.id || node.key}
@@ -1349,6 +1391,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => onSelect(node.source || node)}
             >
+              <title>{node.title || node.id || "Untitled"}</title>
               <circle
                 r={radius}
                 fill={nodeFill(node)}
@@ -1367,7 +1410,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
               ) : (
                 <text className="graph-node-icon" textAnchor="middle" y="8" fill={node.style?.text || "#06131a"}>{iconLabel}</text>
               )}
-              {node.showLabel !== false && (
+              {renderLabel && (
                 <g className="graph-node-title-chip graph-node-title-chip--top" opacity={node.labelOpacity ?? 1}>
                   <rect x={-labelWidth / 2} y={labelY} width={labelWidth} height={labelHeight} rx="6" />
                   <text className="graph-node-title" textAnchor="middle" y={labelY + 15}>
@@ -1377,7 +1420,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
                   </text>
                 </g>
               )}
-              {typeLabel && (
+              {renderTypeLabel && (
                 <g className="graph-type-badge" opacity={Math.min(0.76, node.labelOpacity ?? 1)}>
                   <rect x={-typeWidth / 2} y={typeY} width={typeWidth} height="18" rx="9" />
                   <text className="graph-type" textAnchor="middle" y={typeY + 13}>{typeLabel}</text>
@@ -1427,7 +1470,7 @@ function PreviewView({ previewUrl, startPreview, rebuildPreview, stopPreview, lo
   );
 }
 
-function HealthView({ status, refreshStatus, onRemoveImport, onToggleMountedNode }) {
+function HealthView({ status, refreshStatus, onRemoveImport, onToggleMountedNode, onOpenNode, onDuplicateNode }) {
   if (!status) {
     return (
       <div className="empty-panel">
@@ -1456,36 +1499,97 @@ function HealthView({ status, refreshStatus, onRemoveImport, onToggleMountedNode
           <div className="panel-title">Intertwingle Review</div>
           {status.intake_reviews?.length ? status.intake_reviews.map((review, index) => (
             <details className="issue" key={review.import?.id || index} open={index === 0}>
+              {(() => {
+                const mountedCount = review.import?.all_nodes?.length || 0;
+                const uniqueCount = review.intake?.new_nodes?.length || 0;
+                const overlapCount = Math.max(0, mountedCount - uniqueCount);
+                const relationshipTouches = review.intake?.relationship_imports?.length || 0;
+                const mergeCandidates = review.intake?.merge_candidates?.length || 0;
+                const linkSuggestions = review.intake?.autolinks?.length || 0;
+                const transclusionSuggestions = review.intake?.transclusions?.length || 0;
+                const mostlyOverlap = mountedCount > 0 && uniqueCount === 0;
+                return (
+                  <>
               <summary>
                 <strong>{review.import?.name || review.import?.id || "Mounted substrate"}</strong>
               </summary>
-              <div className="muted">
-                {review.intake?.merge_candidates?.length || 0} merge candidates, {review.intake?.new_nodes?.length || 0} new nodes, {review.intake?.relationship_imports?.length || 0} incoming relationships, {review.intake?.autolinks?.length || 0} link suggestions, {review.intake?.transclusions?.length || 0} transclusion suggestions.
+              <div className="mounted-review-stats">
+                <div className="mounted-review-stat">
+                  <strong>{mountedCount}</strong>
+                  <small>mounted nodes</small>
+                </div>
+                <div className="mounted-review-stat">
+                  <strong>{overlapCount}</strong>
+                  <small>already represented locally</small>
+                </div>
+                <div className="mounted-review-stat">
+                  <strong>{uniqueCount}</strong>
+                  <small>distinct additions</small>
+                </div>
+                <div className="mounted-review-stat">
+                  <strong>{relationshipTouches}</strong>
+                  <small>incoming relationships touching local nodes</small>
+                </div>
               </div>
+              <div className="muted">
+                {mergeCandidates} merge candidates, {linkSuggestions} link suggestions, {transclusionSuggestions} transclusion suggestions.
+              </div>
+              <p className="muted">
+                {mostlyOverlap
+                  ? "This mounted substrate is currently acting as a reference or comparison layer. Its nodes are still available below to open, hide, or duplicate into your own workspace."
+                  : "Mounted nodes stay available even when they overlap partly. Use the list below to open them, hide them, or duplicate specific ones into your own authored workspace."}
+              </p>
               <div className="relationship-actions">
                 <button type="button" onClick={() => onRemoveImport?.(review.import?.id)}>Remove mounted substrate</button>
               </div>
+              {!!review.intake?.new_nodes?.length && (
+                <div className="mounted-node-list">
+                  <div className="panel-title">Distinct additions from this substrate</div>
+                  {review.intake.new_nodes.slice(0, 24).map((item) => (
+                    <div className="relationship-chip" key={item.node}>
+                      <div className="relationship-chip-main">
+                        <strong>{item.title || item.node}</strong>
+                        <small>{item.type || "node"}</small>
+                      </div>
+                      <div className="relationship-chip-actions">
+                        <button type="button" onClick={() => onOpenNode?.(item.node)}>Open</button>
+                        <button type="button" onClick={() => onDuplicateNode?.(item.node)}>Duplicate into workspace</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {review.import?.disabled_node_ids?.length ? (
                 <p className="muted">{review.import.disabled_node_ids.length} node(s) currently hidden from this workspace.</p>
               ) : null}
               <div className="mounted-node-list">
+                <div className="panel-title">Mounted nodes in this substrate</div>
                 {(review.import?.all_nodes || []).slice(0, 60).map((node) => {
                   const checked = !(review.import?.disabled_node_ids || []).includes(node.id);
                   return (
-                    <label className="checkbox-row" key={node.id}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(event) => onToggleMountedNode?.(review.import?.id, node.id, event.target.checked)}
-                      />
-                      <span>
-                        <strong>{node.title || node.id}</strong>
-                        <small>{node.type || "node"}</small>
-                      </span>
-                    </label>
+                    <div className="mounted-node-row" key={node.id}>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => onToggleMountedNode?.(review.import?.id, node.id, event.target.checked)}
+                        />
+                        <span>
+                          <strong>{node.title || node.id}</strong>
+                          <small>{node.type || "node"}</small>
+                        </span>
+                      </label>
+                      <div className="relationship-chip-actions">
+                        <button type="button" onClick={() => onOpenNode?.(node.id)}>Open</button>
+                        <button type="button" onClick={() => onDuplicateNode?.(node.id)}>Duplicate</button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
+                  </>
+                );
+              })()}
             </details>
           )) : <p className="muted">No mounted substrate intake reviews yet.</p>}
         </section>
@@ -1540,6 +1644,18 @@ function SelectorChips({ values, selected, emptyLabel, onToggle }) {
         </button>
       ))}
     </div>
+  );
+}
+
+function EditorFold({ title, helpTitle, help, href, defaultOpen = false, children }) {
+  return (
+    <details className="editor-fold" open={defaultOpen}>
+      <summary>
+        <span>{title}</span>
+        {help && <HelpHint title={helpTitle || title} href={href}>{help}</HelpHint>}
+      </summary>
+      <div className="editor-fold-body">{children}</div>
+    </details>
   );
 }
 
@@ -1675,61 +1791,70 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
   return (
     <div className="editor-panel">
       <div className="panel-row sticky-editor-head">
-        <div>
+        <div className="editor-head-copy">
           <div className="panel-title">Node Editor</div>
-          <div className="small muted">{frontMatter.id || draft.id || draft.relativePath || "new node"}</div>
+          <div className="editor-id">{frontMatter.id || draft.id || draft.relativePath || "new node"}</div>
         </div>
-        <div className="panel-actions">
-          <button onClick={duplicateNode}>Duplicate</button>
-          {localNodePath && <button className="danger" onClick={deleteNode}>Remove Node</button>}
+        <div className="panel-actions panel-actions-primary">
           <button className="primary" onClick={saveNode}>Save Node</button>
         </div>
       </div>
 
-      <FieldLabel help="The name people see first. Keep it human: a person, question, claim, source, place, event, or thing someone can point to." href={canonicalHelpUrl("property", "title")}>Title</FieldLabel>
-      <input value={frontMatter.title || ""} onChange={(e) => updateFrontMatter("title", e.target.value)} />
+      <section className="editor-group">
+        <FieldLabel help="The name people see first. Keep it human: a person, question, claim, source, place, event, or thing someone can point to." href={canonicalHelpUrl("property", "title")}>Title</FieldLabel>
+        <input value={frontMatter.title || ""} onChange={(e) => updateFrontMatter("title", e.target.value)} />
 
-      <FieldLabel help="A node type says what kind of thing this is. Studio reads these from the protocol registry, so the choices stay aligned with Core and Hugo." href={canonicalHelpUrl("node-type", type)}>Type</FieldLabel>
-      <select value={type} onChange={(e) => updateFrontMatter("type", e.target.value)}>
-        {NODE_TYPE_DEFINITIONS.map((nodeType) => (
-          <option value={nodeType.type} key={nodeType.type}>{nodeType.label} ({nodeType.type})</option>
-        ))}
-      </select>
-      {typeDefinition?.purpose && <p className="field-help">{typeDefinition.purpose}</p>}
+        <FieldLabel help="A node type says what kind of thing this is. Studio reads these from the protocol registry, so the choices stay aligned with Core and Hugo." href={canonicalHelpUrl("node-type", type)}>Type</FieldLabel>
+        <select value={type} onChange={(e) => updateFrontMatter("type", e.target.value)}>
+          {NODE_TYPE_DEFINITIONS.map((nodeType) => (
+            <option value={nodeType.type} key={nodeType.type}>{nodeType.label} ({nodeType.type})</option>
+          ))}
+        </select>
+        {typeDefinition?.purpose && <p className="field-help">{typeDefinition.purpose}</p>}
 
-      <FieldLabel help="A subtype narrows the main type without inventing a whole new category. For example, a person can be a writer, researcher, maintainer, or witness." href={canonicalHelpUrl("property", "subtype")}>Subtype</FieldLabel>
-      <select value={frontMatter.subtype || ""} onChange={(e) => updateFrontMatter("subtype", e.target.value || undefined)}>
-        <option value="">No subtype</option>
-        {allowedSubtypes.map((subtype) => <option value={subtype} key={subtype}>{subtype}</option>)}
-        {frontMatter.subtype && !allowedSubtypes.includes(frontMatter.subtype) && <option value={frontMatter.subtype}>{frontMatter.subtype}</option>}
-      </select>
+        <FieldLabel help="A short human sentence that tells readers why this node exists. If the graph only showed this line, it should still make sense." href={canonicalHelpUrl("property", "summary")}>Summary</FieldLabel>
+        <textarea rows={3} value={frontMatter.summary || ""} onChange={(e) => updateFrontMatter("summary", e.target.value)} />
 
-      <FieldLabel help="Use additional subtypes when the node legitimately wears more than one narrower role. This is not a replacement for relationships." href={canonicalHelpUrl("property", "subtypes")}>Additional subtypes</FieldLabel>
-      <SelectorChips
-        values={allowedSubtypes}
-        selected={frontMatter.subtypes || []}
-        emptyLabel={allowedSubtypes.length ? "Choose any additional subtypes" : "No protocol subtypes for this type yet"}
-        onToggle={(value) => toggleListFrontMatter("subtypes", value)}
-      />
+        <FieldLabel help="The authored prose for this node. Relationships, sources, and transclusions should carry the structure around it instead of forcing everything into text." href={canonicalHelpUrl("property", "content")}>Content</FieldLabel>
+        <textarea className="body-editor" value={draft.body || ""} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+      </section>
 
-      <FieldLabel help="Facets are secondary lenses for filtering and authoring. They help say, for example, that a quote can behave like evidence, a claim, and a source fragment." href={canonicalHelpUrl("property", "facets")}>Facets</FieldLabel>
-      <SelectorChips
-        values={NODE_TYPES}
-        selected={frontMatter.facets || []}
-        emptyLabel="Choose secondary node roles"
-        onToggle={(value) => toggleListFrontMatter("facets", value)}
-      />
+      <EditorFold
+        title="Classification"
+        helpTitle="Classification"
+        help="Subtype and facets are useful, but they are there to sharpen the node after the main type and summary are right."
+        href={canonicalHelpUrl("property", "subtype")}
+      >
+        <FieldLabel help="A subtype narrows the main type without inventing a whole new category. For example, a person can be a writer, researcher, maintainer, or witness." href={canonicalHelpUrl("property", "subtype")}>Subtype</FieldLabel>
+        <select value={frontMatter.subtype || ""} onChange={(e) => updateFrontMatter("subtype", e.target.value || undefined)}>
+          <option value="">No subtype</option>
+          {allowedSubtypes.map((subtype) => <option value={subtype} key={subtype}>{subtype}</option>)}
+          {frontMatter.subtype && !allowedSubtypes.includes(frontMatter.subtype) && <option value={frontMatter.subtype}>{frontMatter.subtype}</option>}
+        </select>
 
-      <FieldLabel help="A short human sentence that tells readers why this node exists. If the graph only showed this line, it should still make sense." href={canonicalHelpUrl("property", "summary")}>Summary</FieldLabel>
-      <textarea rows={3} value={frontMatter.summary || ""} onChange={(e) => updateFrontMatter("summary", e.target.value)} />
+        <FieldLabel help="Use additional subtypes when the node legitimately wears more than one narrower role. This is not a replacement for relationships." href={canonicalHelpUrl("property", "subtypes")}>Additional subtypes</FieldLabel>
+        <SelectorChips
+          values={allowedSubtypes}
+          selected={frontMatter.subtypes || []}
+          emptyLabel={allowedSubtypes.length ? "Choose any additional subtypes" : "No protocol subtypes for this type yet"}
+          onToggle={(value) => toggleListFrontMatter("subtypes", value)}
+        />
 
-      <section className="editor-section">
-        <div className="panel-row">
-          <div className="panel-title">Authoring State</div>
-          <HelpHint title="Authoring State" href={canonicalHelpUrl("concept", "federated-knowledge-substrates")}>
-            Draft keeps a node out of normal builds unless drafts are explicitly included. Shareable controls whether this node is exported into public protocol artifacts by default.
-          </HelpHint>
-        </div>
+        <FieldLabel help="Facets are secondary lenses for filtering and authoring. They help say, for example, that a quote can behave like evidence, a claim, and a source fragment." href={canonicalHelpUrl("property", "facets")}>Facets</FieldLabel>
+        <SelectorChips
+          values={NODE_TYPES}
+          selected={frontMatter.facets || []}
+          emptyLabel="Choose secondary node roles"
+          onToggle={(value) => toggleListFrontMatter("facets", value)}
+        />
+      </EditorFold>
+
+      <EditorFold
+        title="Publishing and Privacy"
+        helpTitle="Authoring State"
+        help="Draft keeps a node out of normal builds unless drafts are explicitly included. Shareable controls whether this node is exported into public protocol artifacts by default."
+        href={canonicalHelpUrl("concept", "federated-knowledge-substrates")}
+      >
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -1764,22 +1889,18 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
           })}
         >
           <option value="public">Public</option>
-          <option value="private">Private</option>
-          <option value="restricted">Restricted</option>
-        </select>
-      </section>
-
-      <FieldLabel help="The authored prose for this node. Relationships, sources, and transclusions should carry the structure around it instead of forcing everything into text." href={canonicalHelpUrl("property", "content")}>Content</FieldLabel>
-      <textarea className="body-editor" value={draft.body || ""} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+            <option value="private">Private</option>
+            <option value="restricted">Restricted</option>
+          </select>
+      </EditorFold>
 
       {intakeAnalysis && (
-        <section className="editor-section">
-          <div className="panel-row">
-            <div className="panel-title">Intake Analysis</div>
-            <HelpHint title="Intake Analysis" href={canonicalHelpUrl("concept", "xananode")}>
-              Core inspected imported text and looked for a likely summary, likely extracted type, existing node mentions, link candidates, and possible transclusions.
-            </HelpHint>
-          </div>
+        <EditorFold
+          title="Intake Analysis"
+          helpTitle="Intake Analysis"
+          help="Core inspected imported text and looked for a likely summary, likely extracted type, existing node mentions, link candidates, and possible transclusions."
+          href={canonicalHelpUrl("concept", "xananode")}
+        >
           {intakeAnalysis.suggested_type && intakeAnalysis.suggested_type !== type && (
             <div className="relationship-definition">
               <span className="pill">Suggested type</span>
@@ -1813,7 +1934,7 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
           {!!intakeAnalysis.transclusion_suggestions?.length && (
             <div className="muted">{intakeAnalysis.transclusion_suggestions.length} transclusion candidate{intakeAnalysis.transclusion_suggestions.length === 1 ? "" : "s"} detected.</div>
           )}
-        </section>
+        </EditorFold>
       )}
 
       {type === "trail" && (
@@ -1952,12 +2073,18 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
         )) : <p className="muted">No relationships yet.</p>}
       </section>
 
-      <section className="editor-section">
-        <div className="panel-title">Suggestions</div>
-        {suggestions.map((suggestion, i) => (
+      <EditorFold title={`Suggestions${suggestions.length ? ` (${suggestions.length})` : ""}`} defaultOpen={false}>
+        {suggestions.length ? suggestions.map((suggestion, i) => (
           <button className="suggestion" key={i} onClick={() => suggestion.action?.()}>{suggestion.text}</button>
-        ))}
-      </section>
+        )) : <p className="muted">No suggestions right now.</p>}
+      </EditorFold>
+
+      <EditorFold title="Node Actions" defaultOpen={false}>
+        <div className="panel-actions panel-actions-secondary">
+          <button onClick={duplicateNode}>Duplicate</button>
+          {localNodePath && <button className="danger" onClick={deleteNode}>Remove Node</button>}
+        </div>
+      </EditorFold>
     </div>
   );
 }
@@ -2084,6 +2211,58 @@ function scaleGraphViewport(viewport, factor) {
   };
 }
 
+function describeGraphDensity(graph = {}) {
+  const edgeCount = Array.isArray(graph.edges) ? graph.edges.length : 0;
+  const nodeCount = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
+  const incidentCounts = new Map();
+  for (const edge of graph.edges || []) {
+    incidentCounts.set(edge.source?.id, (incidentCounts.get(edge.source?.id) || 0) + 1);
+    incidentCounts.set(edge.target?.id, (incidentCounts.get(edge.target?.id) || 0) + 1);
+  }
+  const maxIncident = Math.max(0, ...incidentCounts.values(), 0);
+  const dense = edgeCount >= 120 || nodeCount >= 140 || maxIncident >= 70;
+  return {
+    mode: dense ? "dense" : "normal",
+    edgeCount,
+    nodeCount,
+    maxIncident,
+    incidentCounts
+  };
+}
+
+function selectVisibleGraphLabels(graph = {}, options = {}) {
+  const dense = options.dense === true;
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  if (!dense) {
+    return new Set(nodes.map((node) => node.id || node.key).filter(Boolean));
+  }
+  const incidentCounts = describeGraphDensity(graph).incidentCounts;
+  const ranked = [...nodes]
+    .sort((a, b) => {
+      const aSelected = a.selected ? 1 : 0;
+      const bSelected = b.selected ? 1 : 0;
+      if (aSelected !== bSelected) return bSelected - aSelected;
+      const aDistance = Number(a.distance || 0);
+      const bDistance = Number(b.distance || 0);
+      if (aDistance !== bDistance) return aDistance - bDistance;
+      const aIncident = incidentCounts.get(a.id) || 0;
+      const bIncident = incidentCounts.get(b.id) || 0;
+      if (aIncident !== bIncident) return bIncident - aIncident;
+      return Number(b.importance || 0) - Number(a.importance || 0);
+    });
+  const visible = new Set();
+  for (const node of ranked) {
+    if (node.selected) visible.add(node.id || node.key);
+  }
+  for (const node of ranked) {
+    const id = node.id || node.key;
+    if (!id) continue;
+    if (Number(node.distance || 0) <= 1 && visible.size < 24) visible.add(id);
+    if (visible.size >= 24) break;
+  }
+  return visible;
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -2096,10 +2275,6 @@ function nodeFill(node) {
 
 function nodeGradientId(node) {
   return `node-gradient-${String(node?.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
-}
-
-function edgeMarkerId(edge) {
-  return `edge-arrow-${String(edge.key || edge.type || "edge").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
 }
 
 function humanizeRelationship(value) {
@@ -2353,7 +2528,8 @@ function createUnavailableApi() {
     readTextFile: unavailable,
     onPreviewLog: () => {},
     onPreviewStopped: () => {},
-    onStudioCommand: () => {}
+    onStudioCommand: () => {},
+    onWorkspaceProgress: () => {}
   };
 }
 

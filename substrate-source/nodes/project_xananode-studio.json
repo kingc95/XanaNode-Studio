@@ -1,0 +1,12 @@
+{
+  "id": "xananode.studio:project/xananode-studio",
+  "title": "XanaNode Studio",
+  "type": "project",
+  "subtype": "desktop_authoring_app",
+  "importance": 5,
+  "summary": "The local-first desktop application for authoring, reviewing, validating, and projecting XanaNode substrates.",
+  "source_url": "https://github.com/kingc95/XanaNode-Studio",
+  "repository": "kingc95/XanaNode-Studio",
+  "software_version": "0.1.0",
+  "relationships": []
+}

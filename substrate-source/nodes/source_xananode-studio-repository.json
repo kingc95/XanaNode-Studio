@@ -1,0 +1,12 @@
+{
+  "id": "xananode.studio:source/repository-xananode-studio",
+  "title": "XanaNode Studio Repository",
+  "type": "source",
+  "subtype": "git_repository",
+  "importance": 5,
+  "summary": "Public Git repository for the XanaNode Studio reference implementation.",
+  "source_url": "https://github.com/kingc95/XanaNode-Studio",
+  "repository": "kingc95/XanaNode-Studio",
+  "rights_status": "external",
+  "relationships": []
+}

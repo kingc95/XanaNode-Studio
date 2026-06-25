@@ -1,0 +1,26 @@
+{
+  "id": "xananode.studio:source/artifact-vite-config",
+  "title": "Vite.Config",
+  "type": "source",
+  "subtype": "project_document",
+  "importance": 3,
+  "summary": "vite.config.js is preserved as a raw Studio source artifact in the XanaNode Studio substrate.",
+  "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/vite.config.js",
+  "artifact_path": "vite.config.js",
+  "asset_path": "assets/raw/repository/vite.config.js",
+  "asset_role": "repository_source",
+  "media_type": "document",
+  "mime_type": "text/markdown",
+  "rights_status": "Apache-2.0",
+  "content_id": "sha256:5e9504d182757741428e291e4268eb40fce646574529f7bcb52134db790a0db4",
+  "content": "import { defineConfig } from \"vite\";\nimport react from \"@vitejs/plugin-react\";\n\nexport default defineConfig({\n  base: \"./\",\n  plugins: [react()],\n  build: {\n    outDir: \"dist/renderer\",\n    emptyOutDir: true\n  },\n  server: {\n    port: 5173,\n    strictPort: true\n  }\n});\n",
+  "source_snapshot": {
+    "captured_at": "2026-06-25T14:22:34.827Z",
+    "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/vite.config.js",
+    "method": "archive",
+    "content_id": "sha256:5e9504d182757741428e291e4268eb40fce646574529f7bcb52134db790a0db4",
+    "rights_status": "Apache-2.0",
+    "tool": "xananode-studio/tools/build-substrate-source.mjs"
+  },
+  "relationships": []
+}

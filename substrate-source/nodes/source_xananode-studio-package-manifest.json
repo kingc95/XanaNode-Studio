@@ -1,0 +1,26 @@
+{
+  "id": "xananode.studio:source/artifact-package",
+  "title": "XanaNode Studio Package Manifest",
+  "type": "source",
+  "subtype": "project_document",
+  "importance": 4,
+  "summary": "package.json is preserved as a raw Studio source artifact in the XanaNode Studio substrate.",
+  "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/package.json",
+  "artifact_path": "package.json",
+  "asset_path": "assets/raw/repository/package.json",
+  "asset_role": "repository_source",
+  "media_type": "document",
+  "mime_type": "application/json",
+  "rights_status": "Apache-2.0",
+  "content_id": "sha256:129de43b020696f27d0a46080c61286e556a69f649b07db2f4a9ffe153e176d3",
+  "content": "{\n  \"name\": \"@xananode/studio\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Local-first desktop studio for authoring XanaNode knowledge substrates.\",\n  \"type\": \"module\",\n  \"main\": \"src/main/main.js\",\n  \"scripts\": {\n    \"build:metadata\": \"node scripts/write-build-metadata.mjs\",\n    \"build:substrate-source\": \"node tools/build-substrate-source.mjs\",\n    \"predev\": \"npm run build:metadata\",\n    \"dev\": \"node scripts/dev.mjs\",\n    \"prestart\": \"npm run build\",\n    \"start\": \"electron .\",\n    \"prebuild\": \"npm run build:metadata\",\n    \"build\": \"vite build\",\n    \"preview\": \"vite preview\",\n    \"test\": \"node --test test/*.test.js\"\n  },\n  \"dependencies\": {\n    \"@vitejs/plugin-react\": \"latest\",\n    \"vite\": \"latest\",\n    \"typescript\": \"latest\",\n    \"react\": \"latest\",\n    \"react-dom\": \"latest\",\n    \"electron\": \"latest\",\n    \"concurrently\": \"latest\",\n    \"wait-on\": \"latest\",\n    \"cross-env\": \"latest\",\n    \"@xananode/workspace\": \"file:./vendor/xananode-workspace-repo\"\n  },\n  \"devDependencies\": {},\n  \"keywords\": [\"xananode\", \"studio\", \"knowledge-substrate\", \"local-first\", \"electron\"],\n  \"license\": \"Apache-2.0\"\n}\n",
+  "source_snapshot": {
+    "captured_at": "2026-06-25T14:22:34.827Z",
+    "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/package.json",
+    "method": "archive",
+    "content_id": "sha256:129de43b020696f27d0a46080c61286e556a69f649b07db2f4a9ffe153e176d3",
+    "rights_status": "Apache-2.0",
+    "tool": "xananode-studio/tools/build-substrate-source.mjs"
+  },
+  "relationships": []
+}

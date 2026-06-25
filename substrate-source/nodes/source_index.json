@@ -1,0 +1,26 @@
+{
+  "id": "xananode.studio:source/artifact-index",
+  "title": "Index",
+  "type": "source",
+  "subtype": "project_document",
+  "importance": 3,
+  "summary": "index.html is preserved as a raw Studio source artifact in the XanaNode Studio substrate.",
+  "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/index.html",
+  "artifact_path": "index.html",
+  "asset_path": "assets/raw/repository/index.html",
+  "asset_role": "repository_source",
+  "media_type": "document",
+  "mime_type": "text/html",
+  "rights_status": "Apache-2.0",
+  "content_id": "sha256:65e24e721dd3a0def932aa34fecb14298dffff6e4c6218076aae480c6e63fc7c",
+  "content": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>XanaNode Studio</title>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n    <script type=\"module\" src=\"/src/renderer/main.jsx\"></script>\n  </body>\n</html>\n",
+  "source_snapshot": {
+    "captured_at": "2026-06-25T14:22:34.827Z",
+    "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/index.html",
+    "method": "archive",
+    "content_id": "sha256:65e24e721dd3a0def932aa34fecb14298dffff6e4c6218076aae480c6e63fc7c",
+    "rights_status": "Apache-2.0",
+    "tool": "xananode-studio/tools/build-substrate-source.mjs"
+  },
+  "relationships": []
+}

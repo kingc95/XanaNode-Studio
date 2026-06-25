@@ -1,0 +1,35 @@
+{
+  "id": "xananode.studio",
+  "name": "XanaNode Studio Substrate",
+  "version": "0.1.0",
+  "namespace": "xananode.studio",
+  "description": "A substrate source built directly from the XanaNode Studio repository, preserving the Electron app, renderer code, preload and main-process logic, scripts, tests, and raw project documents as first-class XanaNode records.",
+  "schema_version": "xananode-core@0.5.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kingc95/XanaNode-Studio.git",
+    "default_branch": "main"
+  },
+  "imports": [
+    "xananode.workspace"
+  ],
+  "build_metadata": {
+    "built_at": "2026-06-25T14:22:34.827Z",
+    "git_commit": "495c05f4b79e5ba677fb855b7d9333238146e84b",
+    "git_branch": "main",
+    "built_by": "xananode-studio/tools/build-substrate-source.mjs"
+  },
+  "sharing": {
+    "default_shareable": true,
+    "rules": [
+      {
+        "selector": {
+          "namespace": "xananode.studio"
+        },
+        "shareable": true,
+        "scope": "public",
+        "reason": "The Studio substrate is intended to be federated as a public implementation source."
+      }
+    ]
+  }
+}

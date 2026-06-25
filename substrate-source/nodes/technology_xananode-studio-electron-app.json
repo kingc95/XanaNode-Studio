@@ -1,0 +1,10 @@
+{
+  "id": "xananode.studio:technology/xananode-studio-electron-app",
+  "title": "XanaNode Studio Electron App",
+  "type": "technology",
+  "subtype": "desktop_application",
+  "importance": 4,
+  "summary": "The desktop application surface that authors use to work with substrates through graph projection, editor panels, validation, and projection helpers.",
+  "software_version": "0.1.0",
+  "relationships": []
+}
