@@ -15,7 +15,7 @@
   "content_id": "sha256:65e24e721dd3a0def932aa34fecb14298dffff6e4c6218076aae480c6e63fc7c",
   "content": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>XanaNode Studio</title>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n    <script type=\"module\" src=\"/src/renderer/main.jsx\"></script>\n  </body>\n</html>\n",
   "source_snapshot": {
-    "captured_at": "2026-06-25T14:22:34.827Z",
+    "captured_at": "2026-06-25T14:24:42.948Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/index.html",
     "method": "archive",
     "content_id": "sha256:65e24e721dd3a0def932aa34fecb14298dffff6e4c6218076aae480c6e63fc7c",

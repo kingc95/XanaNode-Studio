@@ -15,7 +15,7 @@
   "content_id": "sha256:6f045e6fd5282533101c105620c522d28a05c812dce374fc23b3463cf3139891",
   "content": "{\n  \"name\": \"@xananode/studio\",\n  \"product_name\": \"XanaNode Studio\",\n  \"version\": \"0.1.0\",\n  \"built_at\": \"2026-06-25T14:00:18.814Z\",\n  \"git_commit\": \"495c05f4b79e5ba677fb855b7d9333238146e84b\",\n  \"git_branch\": \"main\",\n  \"repository\": \"kingc95/XanaNode-Studio\",\n  \"runtime\": \"node v24.16.0\",\n  \"platform\": \"win32/x64\",\n  \"dependencies\": {\n    \"workspace\": \"3a698f00454720731ef043294dedf64ba5316240\",\n    \"hugo_theme\": \"cf5312a10a6bb354442f7ab21fd5679ed614b3a4\",\n    \"core_sdk\": \"b29928be095f94f10f92a365015a5a471d0ba825\",\n    \"protocol\": \"9973dcfb1191a0dd55be6be5ec022aba7f7ee5c8\"\n  }\n}\n",
   "source_snapshot": {
-    "captured_at": "2026-06-25T14:22:34.827Z",
+    "captured_at": "2026-06-25T14:24:42.948Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/src/generated/build-metadata.json",
     "method": "archive",
     "content_id": "sha256:6f045e6fd5282533101c105620c522d28a05c812dce374fc23b3463cf3139891",

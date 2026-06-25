@@ -15,7 +15,7 @@
   "content_id": "sha256:5e9504d182757741428e291e4268eb40fce646574529f7bcb52134db790a0db4",
   "content": "import { defineConfig } from \"vite\";\nimport react from \"@vitejs/plugin-react\";\n\nexport default defineConfig({\n  base: \"./\",\n  plugins: [react()],\n  build: {\n    outDir: \"dist/renderer\",\n    emptyOutDir: true\n  },\n  server: {\n    port: 5173,\n    strictPort: true\n  }\n});\n",
   "source_snapshot": {
-    "captured_at": "2026-06-25T14:22:34.827Z",
+    "captured_at": "2026-06-25T14:24:42.948Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/vite.config.js",
     "method": "archive",
     "content_id": "sha256:5e9504d182757741428e291e4268eb40fce646574529f7bcb52134db790a0db4",
