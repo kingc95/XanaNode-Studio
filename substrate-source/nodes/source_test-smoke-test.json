@@ -15,7 +15,7 @@
   "content_id": "sha256:a7cf1009c996a62a3e6cad3d74c10fd3e3b0ef3672bddb6f4fe438786b3e6074",
   "content": "import assert from \"node:assert/strict\";\nimport fs from \"node:fs\";\nimport os from \"node:os\";\nimport path from \"node:path\";\nimport {\n  buildWorkspace,\n  computeKnowledgeHealth,\n  createNode,\n  initWorkspace,\n  openWorkspace\n} from \"@xananode/workspace\";\n\nassert.ok(fs.existsSync(\"src/main/main.js\"));\nassert.ok(fs.existsSync(\"src/preload/preload.cjs\"));\nassert.ok(fs.existsSync(\"src/renderer/main.jsx\"));\n\nconst dir = fs.mkdtempSync(path.join(os.tmpdir(), \"xananode-studio-\"));\nconst workspace = await initWorkspace(dir, {\n  name: \"Studio Smoke Test\",\n  author: \"Studio Tester\",\n  git: false\n});\n\nassert.equal(workspace.manifest.name, \"Studio Smoke Test\");\n\nawait createNode(\n  dir,\n  {\n    title: \"Studio Claim\",\n    type: \"claim\",\n    summary: \"A smoke-test claim.\"\n  },\n  \"# Studio Claim\\n\\nThis claim was created from the Studio test.\\n\"\n);\n\nconst reopened = await openWorkspace(dir);\nassert.ok(reopened.nodes.some((node) => node.title === \"Studio Claim\"));\n\nconst health = await computeKnowledgeHealth(dir);\nassert.equal(typeof health.score, \"number\");\n\nconst built = await buildWorkspace(dir, { out: path.join(dir, \"public\") });\nassert.ok(fs.existsSync(path.join(built.outputDir, \"substrate.json\")));\n",
   "source_snapshot": {
-    "captured_at": "2026-06-27T07:05:44.386Z",
+    "captured_at": "2026-06-27T16:35:32.292Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/test/smoke.test.js",
     "method": "archive",
     "content_id": "sha256:a7cf1009c996a62a3e6cad3d74c10fd3e3b0ef3672bddb6f4fe438786b3e6074",

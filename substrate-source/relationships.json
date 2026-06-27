@@ -6,7 +6,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "documents",
       "summary": "The repository documents and carries the Studio project.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/studio-project-implements-workspace",
@@ -14,7 +14,7 @@
       "target": "xananode.workspace:project/xananode-workspace",
       "type": "implements",
       "summary": "Studio uses Workspace as its substrate-management layer and authoring engine contract.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/studio-app-supports-studio-project",
@@ -22,7 +22,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "The Electron app is the human-facing desktop surface of XanaNode Studio.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-index",
@@ -30,7 +30,7 @@
       "target": "xananode.studio:source/artifact-index",
       "type": "contains",
       "summary": "The Studio repository contains index.html.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-license",
@@ -38,7 +38,7 @@
       "target": "xananode.studio:source/artifact-license",
       "type": "contains",
       "summary": "The Studio repository contains LICENSE.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-package-lock",
@@ -46,7 +46,7 @@
       "target": "xananode.studio:source/artifact-package-lock",
       "type": "contains",
       "summary": "The Studio repository contains package-lock.json.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-package",
@@ -54,7 +54,7 @@
       "target": "xananode.studio:source/artifact-package",
       "type": "contains",
       "summary": "The Studio repository contains package.json.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-readme",
@@ -62,7 +62,7 @@
       "target": "xananode.studio:source/artifact-readme",
       "type": "contains",
       "summary": "The Studio repository contains README.md.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-scripts-dev",
@@ -70,7 +70,7 @@
       "target": "xananode.studio:source/artifact-scripts-dev",
       "type": "contains",
       "summary": "The Studio repository contains scripts/dev.mjs.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/scripts-dev-supports-studio-project",
@@ -78,7 +78,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Scripts / Dev supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-scripts-write-build-metadata",
@@ -86,7 +86,7 @@
       "target": "xananode.studio:source/artifact-scripts-write-build-metadata",
       "type": "contains",
       "summary": "The Studio repository contains scripts/write-build-metadata.mjs.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/scripts-write-build-metadata-supports-studio-project",
@@ -94,7 +94,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Scripts / Write Build Metadata supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-src-generated-build-metadata",
@@ -102,7 +102,7 @@
       "target": "xananode.studio:source/artifact-src-generated-build-metadata",
       "type": "contains",
       "summary": "The Studio repository contains src/generated/build-metadata.json.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/src-generated-build-metadata-supports-studio-project",
@@ -110,7 +110,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Src / Generated / Build Metadata supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-src-main-main",
@@ -118,7 +118,7 @@
       "target": "xananode.studio:source/artifact-src-main-main",
       "type": "contains",
       "summary": "The Studio repository contains src/main/main.js.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/src-main-main-supports-studio-project",
@@ -126,7 +126,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Src / Main / Main supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-src-preload-preload",
@@ -134,7 +134,7 @@
       "target": "xananode.studio:source/artifact-src-preload-preload",
       "type": "contains",
       "summary": "The Studio repository contains src/preload/preload.cjs.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/src-preload-preload-supports-studio-project",
@@ -142,7 +142,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Src / Preload / Preload supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-src-renderer-styles-app",
@@ -150,7 +150,7 @@
       "target": "xananode.studio:source/artifact-src-renderer-styles-app",
       "type": "contains",
       "summary": "The Studio repository contains src/renderer/styles/app.css.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/src-renderer-styles-app-supports-studio-project",
@@ -158,7 +158,7 @@
       "target": "xananode.studio:project/xananode-studio",
       "type": "supports",
       "summary": "Src / Renderer / Styles / App supports the Studio implementation.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-test-smoke-test",
@@ -166,7 +166,7 @@
       "target": "xananode.studio:source/artifact-test-smoke-test",
       "type": "contains",
       "summary": "The Studio repository contains test/smoke.test.js.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     },
     {
       "id": "xananode.studio:rel/repository-contains-vite-config",
@@ -174,7 +174,7 @@
       "target": "xananode.studio:source/artifact-vite-config",
       "type": "contains",
       "summary": "The Studio repository contains vite.config.js.",
-      "asserted_at": "2026-06-27T07:05:44.386Z"
+      "asserted_at": "2026-06-27T16:35:32.292Z"
     }
   ]
 }
