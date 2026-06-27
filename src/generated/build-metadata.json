@@ -2,16 +2,16 @@
   "name": "@xananode/studio",
   "product_name": "XanaNode Studio",
   "version": "0.1.0",
-  "built_at": "2026-06-25T14:00:18.814Z",
-  "git_commit": "495c05f4b79e5ba677fb855b7d9333238146e84b",
+  "built_at": "2026-06-27T04:59:31.747Z",
+  "git_commit": "096cf426b05e54c21fb53de47a5ff2d80e8012af",
   "git_branch": "main",
   "repository": "kingc95/XanaNode-Studio",
   "runtime": "node v24.16.0",
   "platform": "win32/x64",
   "dependencies": {
-    "workspace": "3a698f00454720731ef043294dedf64ba5316240",
-    "hugo_theme": "cf5312a10a6bb354442f7ab21fd5679ed614b3a4",
-    "core_sdk": "b29928be095f94f10f92a365015a5a471d0ba825",
-    "protocol": "9973dcfb1191a0dd55be6be5ec022aba7f7ee5c8"
+    "workspace": "a66c75c8b1e342d9dd141dd52f09020c61637af0",
+    "hugo_theme": "1541ec2f5d36f4c8c3f978b849b89c1398d9ff2e",
+    "core_sdk": "08ee42fc795dbb2fea499196f3bc4851c2ebca4d",
+    "protocol": "2157f16df0944df0e4ba101458dc967a2abeb0cb"
   }
 }

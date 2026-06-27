@@ -50,6 +50,8 @@ function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [intertwingleOpen, setIntertwingleOpen] = useState(false);
+  const [intakeChooserOpen, setIntakeChooserOpen] = useState(false);
+  const [augmentIntake, setAugmentIntake] = useState(null);
   const [intertwingleBusy, setIntertwingleBusy] = useState(false);
   const [intertwingleProgress, setIntertwingleProgress] = useState("");
   const [federationTargets, setFederationTargets] = useState([]);
@@ -122,6 +124,10 @@ function App() {
         rebuildPreview();
       } else if (command === "preview:start") {
         startPreview();
+      } else if (command === "augment:start") {
+        run(() => api.startAugment?.(), "Started Augment service");
+      } else if (command === "augment:stop") {
+        run(() => api.stopAugment?.(), "Stopped Augment service");
       } else if (command === "workspace:open") {
         openWorkspace();
       } else if (command === "workspace:health") {
@@ -336,8 +342,16 @@ function App() {
     await run(() => (api.exportSubstrate ? api.exportSubstrate() : api.exportPack()), "Exported .substrate");
   }
 
-  async function importAssets() {
+  async function importAssetFiles() {
     const result = await run(() => api.importAssets(), "Imported assets");
+    if (result?.sessions?.length) {
+      setAugmentIntake({
+        sessions: result.sessions.map((entry) => ({
+          ...entry,
+          applying: false
+        }))
+      });
+    }
     if (result?.workspace) {
       const firstImported = result.imported?.[0];
       const importedNode = firstImported
@@ -360,6 +374,92 @@ function App() {
           text: `Imported assets. Core found ${relationshipCount} mention relationships, ${linkCount} link candidates, and ${transclusionCount} transclusion candidates.`
         });
       }
+    }
+  }
+
+  async function launchAugmentSession(payload, successLabel = "Created Augment intake session") {
+    const created = await run(() => api.augmentCreateSession?.(payload), successLabel);
+    if (!created?.session?.id) return null;
+    await run(() => api.augmentExtractSession?.({ sessionId: created.session.id }), "Extracted intake candidates");
+    const candidatesResult = await run(() => api.augmentListCandidates?.({ sessionId: created.session.id }), "Loaded intake candidates");
+    if (!candidatesResult?.candidates) return null;
+    setAugmentIntake((current) => ({
+      sessions: [
+        ...(current?.sessions || []),
+        {
+          sourceFile: payload.sourceType === "text" ? null : undefined,
+          session: created.session,
+          candidates: candidatesResult.candidates,
+          applying: false
+        }
+      ]
+    }));
+    setIntakeChooserOpen(false);
+    return created.session;
+  }
+
+  async function importAssets() {
+    setIntakeChooserOpen(true);
+  }
+
+  async function setAugmentCandidateStatus(sessionId, candidateId, status) {
+    const result = await run(
+      () => api.augmentUpdateCandidate?.({ candidateId, status }),
+      status === "accepted" ? "Accepted intake candidate" : status === "rejected" ? "Rejected intake candidate" : "Reset intake candidate"
+    );
+    if (!result) return;
+    setAugmentIntake((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        sessions: current.sessions.map((entry) => (
+          entry.session?.id !== sessionId
+            ? entry
+            : {
+              ...entry,
+              candidates: entry.candidates.map((candidate) => (
+                candidate.id === candidateId ? { ...candidate, status } : candidate
+              ))
+            }
+        ))
+      };
+    });
+  }
+
+  async function applyAugmentSession(sessionId) {
+    const sessionEntry = augmentIntake?.sessions?.find((entry) => entry.session?.id === sessionId) || null;
+    setAugmentIntake((current) => current ? {
+      ...current,
+      sessions: current.sessions.map((entry) => (
+        entry.session?.id === sessionId ? { ...entry, applying: true } : entry
+      ))
+    } : current);
+    const result = await run(
+      () => api.applyAugmentSession?.({
+        sessionId,
+        session: sessionEntry?.session || undefined,
+        sourceFile: sessionEntry?.sourceFile || undefined,
+        acceptPendingNodes: true,
+        acceptPendingRelationships: true
+      }),
+      "Added Augment intake to workspace"
+    );
+    if (result?.workspace) {
+      setWorkspace(result.workspace);
+      setSelectedNode(result.workspace.nodes?.[0] || null);
+      setDraft(null);
+      setAugmentIntake((current) => {
+        if (!current) return current;
+        const remaining = current.sessions.filter((entry) => entry.session?.id !== sessionId);
+        return remaining.length ? { ...current, sessions: remaining } : null;
+      });
+    } else {
+      setAugmentIntake((current) => current ? {
+        ...current,
+        sessions: current.sessions.map((entry) => (
+          entry.session?.id === sessionId ? { ...entry, applying: false } : entry
+        ))
+      } : current);
     }
   }
 
@@ -831,6 +931,27 @@ function App() {
           onClose={() => setIntertwingleOpen(false)}
         />
       )}
+      {intakeChooserOpen && (
+        <AugmentSourceChooser
+          onImportFiles={async () => {
+            await importAssetFiles();
+            setIntakeChooserOpen(false);
+          }}
+          onSubmitUrl={(payload) => launchAugmentSession(payload, "Created URL intake")}
+          onSubmitWikipedia={(payload) => launchAugmentSession(payload, "Created Wikipedia intake")}
+          onSubmitGithub={(payload) => launchAugmentSession(payload, "Created GitHub intake")}
+          onSubmitText={(payload) => launchAugmentSession(payload, "Created text intake")}
+          onClose={() => setIntakeChooserOpen(false)}
+        />
+      )}
+      {augmentIntake && (
+        <AugmentIntakeDialog
+          intake={augmentIntake}
+          onSetStatus={setAugmentCandidateStatus}
+          onApplySession={applyAugmentSession}
+          onClose={() => setAugmentIntake(null)}
+        />
+      )}
 
       {!workspace ? (
         <Welcome
@@ -852,7 +973,7 @@ function App() {
               <div className="small muted">{workspace.rootDir}</div>
               <div className="manifest-name">{workspace.manifest?.name || workspace.manifest?.id || "Unnamed substrate"}</div>
               <div className="workspace-credit">
-                Created by <a href="https://xananode.com/" target="_blank" rel="noreferrer">Christian Siefen</a> for the <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode</a> project.
+                Created by <a href="https://xananode.com/person/christian-siefen/" target="_blank" rel="noreferrer">Christian Siefen</a> for the <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode</a> project. Follow development on <a href="https://github.com/kingc95" target="_blank" rel="noreferrer">kingc95</a>.
               </div>
               {isCanonicalWorkspace(workspace) && (
                 <div className="canon-warning">
@@ -923,12 +1044,12 @@ function App() {
             />
             {projectionLayout === "split" && centerMode !== "health" && centerMode !== "logs" ? (
               <div className="projection-split" style={{ gridTemplateColumns: `${projectionSplit}% minmax(280px, 1fr)` }}>
-                <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />
+                <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />
                 <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} compact />
               </div>
             ) : (
               <>
-                {centerMode === "graph" && <GraphView nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />}
+                {centerMode === "graph" && <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />}
                 {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} />}
               </>
             )}
@@ -956,6 +1077,10 @@ function App() {
   );
 }
 
+function isWikipediaFileUrlValue(value) {
+  return /wikipedia\.org\/wiki\/File:/i.test(String(value || ""));
+}
+
 function ProjectCreditLinks() {
   return (
     <div className="credit-links">
@@ -981,7 +1106,7 @@ function Welcome({ onOpen, onOpenRecent, onCreate, onTrial, recentWorkspaces = [
           <button onClick={onTrial}>Try Demo Workspace</button>
           <button onClick={onOpen}>Open Existing</button>
         </div>
-        <p className="welcome-credit">Created by <a href="https://xananode.com/" target="_blank" rel="noreferrer">Christian Siefen</a>. Learn the model at <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a>.</p>
+        <p className="welcome-credit">Created by <a href="https://xananode.com/person/christian-siefen/" target="_blank" rel="noreferrer">Christian Siefen</a>. Trace the project at <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a> and follow development on <a href="https://github.com/kingc95" target="_blank" rel="noreferrer">kingc95</a>.</p>
         <ProjectCreditLinks />
       </div>
       <div className="welcome-card recent-card">
@@ -1131,6 +1256,195 @@ function IntertwingleDialog({ targets, loading, busy, progress, onLocalFile, onL
   );
 }
 
+function AugmentSourceChooser({ onImportFiles, onSubmitUrl, onSubmitWikipedia, onSubmitGithub, onSubmitText, onClose }) {
+  const [mode, setMode] = useState("files");
+  const [busy, setBusy] = useState(false);
+  const [title, setTitle] = useState("");
+  const [url, setUrl] = useState("");
+  const [textTitle, setTextTitle] = useState("");
+  const [textBody, setTextBody] = useState("");
+
+  async function handleFiles() {
+    setBusy(true);
+    await onImportFiles();
+    setBusy(false);
+  }
+
+  async function submitCurrent(event) {
+    event.preventDefault();
+    setBusy(true);
+      try {
+        if (mode === "url") {
+          await onSubmitUrl({
+            title: title.trim() || "Imported URL",
+            sourceType: "url",
+            sourceUrl: url.trim()
+          });
+        } else if (mode === "wikipedia") {
+          const wikiFile = isWikipediaFileUrlValue(url);
+          await onSubmitWikipedia({
+            title: title.trim() || (wikiFile ? "Wikipedia File" : "Wikipedia Article"),
+            sourceType: "url",
+            sourceUrl: url.trim()
+          });
+        } else if (mode === "github") {
+        await onSubmitGithub({
+          title: title.trim() || "GitHub Repository",
+          sourceType: "github",
+          sourceUrl: url.trim()
+        });
+      } else if (mode === "text") {
+        await onSubmitText({
+          title: textTitle.trim() || "Captured Note",
+          sourceType: "text",
+          sourceText: textBody
+        });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const needsUrl = mode === "url" || mode === "wikipedia" || mode === "github";
+  const submitDisabled = busy || (needsUrl ? !url.trim() : mode === "text" ? !textBody.trim() : false);
+
+  return (
+    <div className="setup-backdrop">
+      <form className="setup-panel chooser-panel" onSubmit={submitCurrent}>
+        <div className="setup-header">
+          <div>
+            <div className="kicker">Augment Intake</div>
+            <h2>Bring a source into this substrate</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <p className="setup-note">Choose how you want to capture something. Files still work, but URLs, Wikipedia pages, GitHub repositories, and pasted text come through Augment too.</p>
+
+        <div className="chooser-mode-row">
+          <button type="button" className={mode === "files" ? "primary" : ""} onClick={() => setMode("files")}>Files</button>
+          <button type="button" className={mode === "url" ? "primary" : ""} onClick={() => setMode("url")}>URL</button>
+          <button type="button" className={mode === "wikipedia" ? "primary" : ""} onClick={() => setMode("wikipedia")}>Wikipedia</button>
+          <button type="button" className={mode === "github" ? "primary" : ""} onClick={() => setMode("github")}>GitHub</button>
+          <button type="button" className={mode === "text" ? "primary" : ""} onClick={() => setMode("text")}>Paste Text</button>
+        </div>
+
+        {mode === "files" ? (
+          <div className="editor-section chooser-block">
+            <div className="panel-title">Local files</div>
+            <p className="muted">Choose PDFs, text files, markdown, media, or other local source files. Text-like files and PDFs go through Augment review first. Other assets still import directly as media/source nodes.</p>
+            <div className="setup-actions">
+              <button type="button" className="primary" disabled={busy} onClick={handleFiles}>Choose Files</button>
+            </div>
+          </div>
+        ) : (
+          <div className="editor-section chooser-block">
+            <label>Title</label>
+              <input
+                value={mode === "text" ? textTitle : title}
+                onChange={(event) => mode === "text" ? setTextTitle(event.target.value) : setTitle(event.target.value)}
+                placeholder={mode === "github" ? "Repository capture title" : mode === "wikipedia" ? "Wikipedia article or file title" : mode === "url" ? "Source capture title" : "Captured note title"}
+                autoFocus
+              />
+            {needsUrl ? (
+              <>
+                <label>{mode === "github" ? "GitHub repository URL" : mode === "wikipedia" ? "Wikipedia URL" : "URL"}</label>
+                <input
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                  placeholder={mode === "github" ? "https://github.com/owner/repo" : mode === "wikipedia" ? "https://en.wikipedia.org/wiki/..." : "https://..."}
+                />
+              </>
+            ) : (
+              <>
+                <label>Text</label>
+                <textarea rows={10} value={textBody} onChange={(event) => setTextBody(event.target.value)} placeholder="Paste notes, excerpts, or a draft source here." />
+              </>
+            )}
+              <div className="setup-actions">
+                <button type="submit" className="primary" disabled={submitDisabled}>
+                  {mode === "github"
+                    ? "Extract Repository"
+                    : mode === "wikipedia"
+                      ? (isWikipediaFileUrlValue(url) ? "Extract File Page" : "Extract Article")
+                      : mode === "url"
+                        ? "Extract URL"
+                        : "Extract Text"}
+                </button>
+              <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function AugmentIntakeDialog({ intake, onSetStatus, onApplySession, onClose }) {
+  return (
+    <div className="setup-backdrop">
+      <div className="setup-panel intake-panel">
+        <div className="setup-header">
+          <div>
+            <div className="kicker">Augment Intake</div>
+            <h2>Review extracted nodes before bringing them into this workspace</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <p className="setup-note">Text files and PDFs come through Augment first. Accept what belongs in this substrate, reject what does not, then add the accepted results into your current workspace.</p>
+        <div className="intake-session-list">
+          {intake.sessions.map((entry) => {
+            const sessionId = entry.session?.id;
+            const nodeCount = entry.candidates.filter((candidate) => candidate.kind === "node").length;
+            const relationshipCount = entry.candidates.filter((candidate) => candidate.kind === "relationship").length;
+            const acceptedCount = entry.candidates.filter((candidate) => candidate.status === "accepted").length;
+            return (
+              <section className="editor-section intake-session-card" key={sessionId}>
+                <div className="panel-row">
+                  <div>
+                    <div className="panel-title">{entry.session?.title || "Untitled intake"}</div>
+                    <div className="small muted">{entry.sourceFile}</div>
+                  </div>
+                  <button type="button" className="primary" disabled={entry.applying} onClick={() => onApplySession(sessionId)}>
+                    {entry.applying ? "Adding..." : "Add to Workspace"}
+                  </button>
+                </div>
+                <div className="pill-row">
+                  <span className="pill">{nodeCount} nodes</span>
+                  <span className="pill">{relationshipCount} relationships</span>
+                  <span className="pill">{acceptedCount} accepted</span>
+                </div>
+                <div className="intake-candidate-list">
+                  {entry.candidates.map((candidate) => (
+                    <article className={`intake-candidate ${candidate.status || "pending"}`} key={candidate.id}>
+                      <div className="panel-row">
+                        <div>
+                          <strong>{candidate.title || "Untitled candidate"}</strong>
+                          <div className="small muted">
+                            {candidate.kind === "relationship"
+                              ? `${candidate.relationshipType || "related_to"} relationship`
+                              : `${String(candidate.nodeType || "concept").toUpperCase()} node`}
+                          </div>
+                        </div>
+                        <div className="candidate-actions">
+                          <button type="button" className={candidate.status === "accepted" ? "primary" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "accepted")}>Accept</button>
+                          <button type="button" className={candidate.status === "pending" ? "active-chip" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "pending")}>Pending</button>
+                          <button type="button" className={candidate.status === "rejected" ? "danger" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "rejected")}>Reject</button>
+                        </div>
+                      </div>
+                      {candidate.summary ? <p>{candidate.summary}</p> : null}
+                      {candidate.sourceFragment ? <blockquote>{candidate.sourceFragment}</blockquote> : null}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectionToolbar({
   centerMode,
   setCenterMode,
@@ -1181,7 +1495,7 @@ function ProjectionToolbar({
   );
 }
 
-function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) {
+function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMode, command }) {
   const current = draft || selectedNode || nodes[0] || null;
   const [graphDepth, setGraphDepth] = useState(1);
   const graphNodes = useMemo(() => buildEffectiveGraphNodes(nodes, draft, selectedNode), [nodes, draft, selectedNode]);
@@ -1363,7 +1677,7 @@ function GraphView({ nodes, selectedNode, draft, onSelect, linkMode, command }) 
           );})}
           {graph.nodes.map((node) => {
             const radius = node.r || (node.selected ? 46 : 32);
-            const mediaSrc = node.image || "";
+            const mediaSrc = resolveGraphNodeMediaSrc(node, workspaceRoot);
             const hasMedia = Boolean(mediaSrc);
             const labelLines = wrapProjectionText(node.title || node.id || "Untitled", { maxCharsPerLine: node.selected ? 18 : 16 });
             const chipText = node.subtype ? `${node.type || "node"} / ${node.subtype}` : (node.type || "node");
@@ -1703,6 +2017,10 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
   });
   const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
   const trailSequence = Array.isArray(frontMatter.nodes) ? frontMatter.nodes : [];
+  const selectedSubtypes = uniqueList([
+    frontMatter.subtype,
+    ...(Array.isArray(frontMatter.subtypes) ? frontMatter.subtypes : [])
+  ]);
   const availableTrailTargets = nodes.filter((node) => projectionNodeRef(node) !== projectionNodeRef(draft));
   const localNodePath = resolveNodeFilePath(draft);
   const intakeAnalysis = frontMatter.intake_analysis && typeof frontMatter.intake_analysis === "object"
@@ -1728,6 +2046,15 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
       ? current.filter((item) => item !== value)
       : [...current, value];
     updateFrontMatter(key, next);
+  }
+
+  function toggleSubtype(value) {
+    const current = selectedSubtypes;
+    const next = current.includes(value)
+      ? current.filter((item) => item !== value)
+      : [...current, value];
+    updateFrontMatter("subtype", next[0] || undefined);
+    updateFrontMatter("subtypes", next.slice(1));
   }
 
   function updateRelationship(index, patch) {
@@ -1824,20 +2151,14 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
         helpTitle="Classification"
         help="Subtype and facets are useful, but they are there to sharpen the node after the main type and summary are right."
         href={canonicalHelpUrl("property", "subtype")}
+        defaultOpen={false}
       >
-        <FieldLabel help="A subtype narrows the main type without inventing a whole new category. For example, a person can be a writer, researcher, maintainer, or witness." href={canonicalHelpUrl("property", "subtype")}>Subtype</FieldLabel>
-        <select value={frontMatter.subtype || ""} onChange={(e) => updateFrontMatter("subtype", e.target.value || undefined)}>
-          <option value="">No subtype</option>
-          {allowedSubtypes.map((subtype) => <option value={subtype} key={subtype}>{subtype}</option>)}
-          {frontMatter.subtype && !allowedSubtypes.includes(frontMatter.subtype) && <option value={frontMatter.subtype}>{frontMatter.subtype}</option>}
-        </select>
-
-        <FieldLabel help="Use additional subtypes when the node legitimately wears more than one narrower role. This is not a replacement for relationships." href={canonicalHelpUrl("property", "subtypes")}>Additional subtypes</FieldLabel>
+        <FieldLabel help="Choose one or more subtypes when the node needs a narrower role. The first selected subtype becomes the primary one, and the rest stay attached as additional subtypes." href={canonicalHelpUrl("property", "subtypes")}>Subtypes</FieldLabel>
         <SelectorChips
           values={allowedSubtypes}
-          selected={frontMatter.subtypes || []}
-          emptyLabel={allowedSubtypes.length ? "Choose any additional subtypes" : "No protocol subtypes for this type yet"}
-          onToggle={(value) => toggleListFrontMatter("subtypes", value)}
+          selected={selectedSubtypes}
+          emptyLabel={allowedSubtypes.length ? "Choose any matching subtypes" : "No protocol subtypes for this type yet"}
+          onToggle={toggleSubtype}
         />
 
         <FieldLabel help="Facets are secondary lenses for filtering and authoring. They help say, for example, that a quote can behave like evidence, a claim, and a source fragment." href={canonicalHelpUrl("property", "facets")}>Facets</FieldLabel>
@@ -1854,6 +2175,7 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
         helpTitle="Authoring State"
         help="Draft keeps a node out of normal builds unless drafts are explicitly included. Shareable controls whether this node is exported into public protocol artifacts by default."
         href={canonicalHelpUrl("concept", "federated-knowledge-substrates")}
+        defaultOpen={false}
       >
         <label className="checkbox-row">
           <input
@@ -1938,12 +2260,15 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
       )}
 
       {type === "trail" && (
-        <section className="editor-section">
+        <EditorFold
+          title={`Trail Sequence${trailSequence.length ? ` (${trailSequence.length})` : ""}`}
+          helpTitle="Trail Sequence"
+          help="Trails are ordered reading or movement paths through the graph. Pick the nodes in sequence and Studio will preserve that route when you save."
+          href={canonicalHelpUrl("concept", "trail")}
+          defaultOpen={trailSequence.length > 0}
+        >
           <div className="panel-row">
             <div className="panel-title">Trail Sequence</div>
-            <HelpHint title="Trail Sequence" href={canonicalHelpUrl("concept", "trail")}>
-              Trails are ordered paths. Pick the nodes in sequence and Studio will keep the trail structure aligned when you save.
-            </HelpHint>
           </div>
           <div className="relationship-form">
             <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
@@ -1983,15 +2308,18 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
           ) : (
             <p className="muted">This trail is empty. Add nodes in the order you want readers to follow them.</p>
           )}
-        </section>
+        </EditorFold>
       )}
 
-      <section className="editor-section">
+      <EditorFold
+        title={`Relationships${relationships.length ? ` (${relationships.length})` : ""}`}
+        helpTitle="Relationships"
+        help="Relationships say why two nodes belong together. Pick the meaning first, then choose a target or click two nodes on the graph."
+        href={canonicalHelpUrl("concept", "typed-relationships")}
+        defaultOpen={relationships.length > 0}
+      >
         <div className="panel-row">
           <div className="panel-title">Relationships</div>
-          <HelpHint title="Relationships" href={canonicalHelpUrl("concept", "typed-relationships")}>
-            Relationships say why two nodes belong together. Pick the meaning first, then choose a target or click two nodes on the graph.
-          </HelpHint>
         </div>
         <div className="relationship-catalog">
           <div className="relationship-filters">
@@ -2071,7 +2399,7 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
             {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && <small>Inverse type: {RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse}</small>}
           </div>
         )) : <p className="muted">No relationships yet.</p>}
-      </section>
+      </EditorFold>
 
       <EditorFold title={`Suggestions${suggestions.length ? ` (${suggestions.length})` : ""}`} defaultOpen={false}>
         {suggestions.length ? suggestions.map((suggestion, i) => (
@@ -2163,7 +2491,8 @@ function buildLocalGraph(nodes, current, maxDepth = 1) {
 
 function buildEffectiveGraphNodes(nodes, draft, selectedNode) {
   const baseNodes = Array.isArray(nodes) ? [...nodes] : [];
-  if (!draft) return baseNodes;
+  const hydratedBaseNodes = hydratePrimaryMediaNodes(baseNodes);
+  if (!draft) return hydratedBaseNodes;
 
   const draftNode = {
     ...draft,
@@ -2173,21 +2502,88 @@ function buildEffectiveGraphNodes(nodes, draft, selectedNode) {
   };
   const draftRef = projectionNodeRef(draftNode);
   const selectedRef = projectionNodeRef(selectedNode);
-  const replaceIndex = baseNodes.findIndex((node) => {
+  const replaceIndex = hydratedBaseNodes.findIndex((node) => {
     const nodeRef = projectionNodeRef(node);
     return nodeRef && (nodeRef === draftRef || nodeRef === selectedRef || nodeKey(node) === nodeKey(draftNode));
   });
 
   if (replaceIndex >= 0) {
-    baseNodes.splice(replaceIndex, 1, {
-      ...baseNodes[replaceIndex],
+    hydratedBaseNodes.splice(replaceIndex, 1, {
+      ...hydratedBaseNodes[replaceIndex],
       ...draftNode,
-      id: baseNodes[replaceIndex].id || draftNode.id
+      id: hydratedBaseNodes[replaceIndex].id || draftNode.id
     });
-    return baseNodes;
+    return hydratePrimaryMediaNodes(hydratedBaseNodes);
   }
 
-  return [...baseNodes, draftNode];
+  return hydratePrimaryMediaNodes([...hydratedBaseNodes, draftNode]);
+}
+
+function hydratePrimaryMediaNodes(nodes = []) {
+  const byRef = new Map();
+  for (const node of nodes) {
+    for (const ref of [
+      projectionNodeRef(node),
+      node?.protocolId,
+      node?.protocol_id,
+      node?.frontMatter?.protocol_id,
+      node?.data?.protocol_id,
+      node?.id
+    ].filter(Boolean)) {
+      byRef.set(normalizeNodeRef(ref), node);
+    }
+  }
+
+  const primaryMediaByNodeRef = new Map();
+  for (const node of nodes) {
+    const sourceRef = normalizeNodeRef(projectionNodeRef(node));
+    const relationships = Array.isArray(node?.frontMatter?.relationships)
+      ? node.frontMatter.relationships
+      : Array.isArray(node?.data?.relationships)
+        ? node.data.relationships
+        : Array.isArray(node?.relationships)
+          ? node.relationships
+          : [];
+    for (const relationship of relationships) {
+      const type = relationship?.type || "";
+      const targetRef = normalizeNodeRef(relationship?.target || relationship?.to || relationship?.node || "");
+      if (!targetRef) continue;
+      if (type === "has_primary_media" && sourceRef) {
+        primaryMediaByNodeRef.set(sourceRef, targetRef);
+      }
+      if (type === "used_as_primary_media_for") {
+        primaryMediaByNodeRef.set(targetRef, sourceRef);
+      }
+    }
+  }
+
+  return nodes.map((node) => {
+    const frontMatter = node?.frontMatter || node?.data || node || {};
+    const nodeRef = normalizeNodeRef(projectionNodeRef(node));
+    const primaryMediaRef = normalizeNodeRef(
+      frontMatter.primary_media
+      || frontMatter.primary_media_node?.protocol_id
+      || frontMatter.primary_media_node?.id
+      || primaryMediaByNodeRef.get(nodeRef)
+      || ""
+    );
+    const resolvedMediaNode = primaryMediaRef ? byRef.get(primaryMediaRef) : null;
+    if (!resolvedMediaNode) return node;
+    const resolvedMediaFrontMatter = extractFrontMatterShape(resolvedMediaNode);
+    if (!resolvedMediaFrontMatter.file) {
+      resolvedMediaFrontMatter.file = resolvedMediaFrontMatter.asset_path || resolvedMediaFrontMatter.asset || "";
+    }
+    return {
+      ...node,
+      primary_media: primaryMediaRef,
+      primary_media_node: resolvedMediaNode,
+      frontMatter: {
+        ...frontMatter,
+        primary_media: primaryMediaRef,
+        primary_media_node: resolvedMediaFrontMatter
+      }
+    };
+  });
 }
 
 const DEFAULT_GRAPH_VIEWPORT = { x: 0, y: 0, scale: 1 };
@@ -2202,6 +2598,46 @@ function fitGraphViewport(nodes) {
     maxScale: 1.45,
     minScale: 0.66
   });
+}
+
+function resolveGraphNodeMediaSrc(node, workspaceRoot) {
+  const source = node?.source || node;
+  const frontMatter = source?.frontMatter || source?.data || source || {};
+  const mediaNode = frontMatter.primary_media_node || source?.primary_media_node || {};
+  const candidates = [
+    mediaNode.image,
+    mediaNode.file,
+    mediaNode.thumbnail,
+    mediaNode.url,
+    mediaNode.source_url,
+    mediaNode.asset,
+    mediaNode.asset_path,
+    source?.image,
+    frontMatter.image,
+    frontMatter.asset,
+    frontMatter.asset_path,
+    source?.asset,
+    source?.asset_path
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const resolved = resolveGraphMediaCandidate(candidate, workspaceRoot);
+    if (resolved) return resolved;
+  }
+  return "";
+}
+
+function resolveGraphMediaCandidate(candidate, workspaceRoot) {
+  const value = String(candidate || "").trim();
+  if (!value) return "";
+  if (/^(https?:|data:|blob:|file:)/i.test(value)) return value;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return toFileHref(value);
+  if (value.startsWith("/")) return value;
+  if (!workspaceRoot) return "";
+  return toFileHref(`${workspaceRoot}\\${value.replaceAll("/", "\\")}`);
+}
+
+function toFileHref(filePath) {
+  return `file:///${String(filePath || "").replaceAll("\\", "/").replace(/^([A-Za-z]):/, "$1:")}`;
 }
 
 function scaleGraphViewport(viewport, factor) {
@@ -2338,6 +2774,10 @@ function trimLabel(value, max) {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
 }
 
+function uniqueList(values = []) {
+  return values.filter((value, index, list) => value && list.indexOf(value) === index);
+}
+
 function projectionNodeRef(node) {
   return normalizeNodeRef(
     node?.protocolId
@@ -2375,6 +2815,28 @@ function extractFrontMatterShape(node) {
 
 function normalizeFrontMatterForSave(frontMatter = {}) {
   const next = { ...frontMatter };
+  const normalizedSubtypes = uniqueList([
+    next.subtype,
+    ...(Array.isArray(next.subtypes) ? next.subtypes : [])
+  ]);
+  next.subtype = normalizedSubtypes[0] || undefined;
+  next.subtypes = normalizedSubtypes.slice(1);
+  if (!next.subtypes.length) delete next.subtypes;
+  if (!next.subtype) delete next.subtype;
+  for (const field of [
+    "protocolId",
+    "relativeFile",
+    "relativePath",
+    "path",
+    "filePath",
+    "__file",
+    "fullPath",
+    "data",
+    "raw",
+    "source_file"
+  ]) {
+    delete next[field];
+  }
   if (next.type === "trail") {
     const sequence = Array.isArray(next.nodes) ? next.nodes.filter(Boolean) : [];
     const otherRelationships = Array.isArray(next.relationships)
@@ -2512,6 +2974,7 @@ function createUnavailableApi() {
     planNodeDeletion: unavailable,
     deleteNode: unavailable,
     importAssets: unavailable,
+    applyAugmentSession: unavailable,
     saveSnapshot: unavailable,
     build: unavailable,
     exportSubstrate: unavailable,
@@ -2522,6 +2985,16 @@ function createUnavailableApi() {
     openFederationTarget: unavailable,
     validate: unavailable,
     openInShell: unavailable,
+    augmentStatus: unavailable,
+    startAugment: unavailable,
+    stopAugment: unavailable,
+    augmentCreateSession: unavailable,
+    augmentExtractSession: unavailable,
+    augmentListCandidates: unavailable,
+    augmentBulkReview: unavailable,
+    augmentUpdateCandidate: unavailable,
+    augmentSuggestRelationships: unavailable,
+    augmentGetSubstrate: unavailable,
     startHugoPreview: unavailable,
     rebuildHugoPreview: unavailable,
     stopHugoPreview: unavailable,
@@ -2529,7 +3002,9 @@ function createUnavailableApi() {
     onPreviewLog: () => {},
     onPreviewStopped: () => {},
     onStudioCommand: () => {},
-    onWorkspaceProgress: () => {}
+    onWorkspaceProgress: () => {},
+    onAugmentLog: () => {},
+    onAugmentStopped: () => {}
   };
 }
 

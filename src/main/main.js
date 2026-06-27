@@ -26,6 +26,7 @@ import {
   deleteNode,
   workspaceApi
 } from "@xananode/workspace";
+import { parseFrontMatter, stringifyFrontMatter, slugify } from "@xananode/core";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +37,12 @@ const appMetadata = readAppMetadata();
 let mainWindow = null;
 let currentWorkspaceDir = null;
 let hugoProcess = null;
+let augmentProcess = null;
+let augmentService = {
+  port: null,
+  url: null,
+  mode: null
+};
 
 app.setName("XanaNode Studio");
 if (process.platform === "win32") app.setAppUserModelId("com.xananode.studio");
@@ -43,6 +50,152 @@ if (process.platform === "win32") app.setAppUserModelId("com.xananode.studio");
 function rendererUrl() {
   if (process.env.VITE_DEV_SERVER_URL) return process.env.VITE_DEV_SERVER_URL;
   return `file://${path.join(__dirname, "../../dist/renderer/index.html")}`;
+}
+
+function resolveAugmentExecutable() {
+  if (process.platform !== "win32") return null;
+  const candidates = [
+    path.join(appRoot, "vendor", "xananode-augment", "dist", "win-x64", "xananode-augment.exe"),
+    path.join(app.getAppPath(), "vendor", "xananode-augment", "dist", "win-x64", "xananode-augment.exe"),
+    path.resolve(appRoot, "..", "XanaNode-Augment", "dist", "win-x64", "xananode-augment.exe")
+  ];
+  for (const executable of candidates) {
+    const runtimeDir = path.join(path.dirname(executable), "app");
+    if (fs.existsSync(executable) && fs.existsSync(runtimeDir)) {
+      return { executable, runtimeDir };
+    }
+  }
+  return null;
+}
+
+function resolveAugmentSourceRoot() {
+  const candidates = [
+    path.join(appRoot, "vendor", "xananode-augment"),
+    path.resolve(appRoot, "..", "XanaNode-Augment")
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "artifacts", "api-server", "src", "cli.ts"))) || null;
+}
+
+async function waitForAugmentHealth(url, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(new URL("/api/healthz", url));
+      if (response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        if (payload?.status === "ok") return true;
+      }
+    } catch {
+      // keep waiting
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+function augmentStatusPayload(extra = {}) {
+  return sanitizeForIpc({
+    running: Boolean(augmentProcess),
+    url: augmentService.url,
+    port: augmentService.port,
+    mode: augmentService.mode,
+    ...extra
+  });
+}
+
+async function startAugmentService({ port } = {}) {
+  if (augmentProcess && augmentService.url) {
+    const ready = await waitForAugmentHealth(augmentService.url, 500);
+    if (ready) return augmentStatusPayload({ ready: true });
+    stopAugmentService();
+  }
+
+  const nextPort = port || await getAvailablePort(8788);
+  const url = `http://127.0.0.1:${nextPort}/`;
+  const sourceRoot = !app.isPackaged ? resolveAugmentSourceRoot() : null;
+  const executable = sourceRoot ? null : resolveAugmentExecutable();
+  let child = null;
+  let mode = "source";
+
+  if (sourceRoot) {
+    child = spawn("node", ["./scripts/run-tsx.mjs", "./artifacts/api-server/src/cli.ts", "serve", "--port", String(nextPort), "--host", "127.0.0.1"], {
+      cwd: sourceRoot,
+      shell: false
+    });
+  } else if (executable) {
+    mode = "executable";
+    child = spawn(executable.executable, ["serve", "--port", String(nextPort), "--host", "127.0.0.1"], {
+      cwd: executable.runtimeDir,
+      shell: false
+    });
+  } else {
+    const fallbackSourceRoot = resolveAugmentSourceRoot();
+    if (!fallbackSourceRoot) {
+      throw new Error("XanaNode Augment could not be found. Link or clone XanaNode-Augment into the XanaNode-Master stack.");
+    }
+    child = spawn("node", ["./scripts/run-tsx.mjs", "./artifacts/api-server/src/cli.ts", "serve", "--port", String(nextPort), "--host", "127.0.0.1"], {
+      cwd: fallbackSourceRoot,
+      shell: false
+    });
+  }
+
+  augmentProcess = child;
+  augmentService = { port: nextPort, url, mode };
+
+  child.stdout.on("data", (data) => sendToRenderer("augment:log", data.toString()));
+  child.stderr.on("data", (data) => sendToRenderer("augment:log", data.toString()));
+  child.on("exit", (code) => {
+    if (augmentProcess !== child) return;
+    augmentProcess = null;
+    const stopped = augmentStatusPayload({ code });
+    augmentService = { port: null, url: null, mode: null };
+    sendToRenderer("augment:stopped", stopped);
+  });
+
+  const ready = await waitForAugmentHealth(url);
+  if (!ready) {
+    stopAugmentService();
+    throw new Error("XanaNode Augment did not become ready in time.");
+  }
+
+  return augmentStatusPayload({ ready: true });
+}
+
+function stopAugmentService() {
+  if (!augmentProcess) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(augmentProcess.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    augmentProcess.kill("SIGTERM");
+  }
+  augmentProcess = null;
+  augmentService = { port: null, url: null, mode: null };
+}
+
+async function ensureAugmentService() {
+  if (augmentProcess && augmentService.url) {
+    const ready = await waitForAugmentHealth(augmentService.url, 500);
+    if (ready) return augmentService.url;
+  }
+  const status = await startAugmentService();
+  return status.url;
+}
+
+async function callAugment(endpoint, options = {}) {
+  const baseUrl = await ensureAugmentService();
+  const response = await fetch(new URL(endpoint, baseUrl), {
+    method: options.method || "GET",
+    headers: {
+      "content-type": "application/json",
+      ...(options.headers || {})
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || `Augment request failed: ${response.status}`);
+  }
+  return payload;
 }
 
 function createWindow() {
@@ -126,6 +279,8 @@ function installAppMenu() {
         { label: "Build Artifacts", accelerator: "CmdOrCtrl+B", click: () => sendStudioCommand("workspace:build") },
         { label: "Export .substrate", accelerator: "CmdOrCtrl+E", click: () => sendStudioCommand("substrate:export") },
         { label: "Start Hugo Projection", accelerator: "CmdOrCtrl+Shift+P", click: () => sendStudioCommand("preview:start") },
+        { label: "Start Augment Service", accelerator: "CmdOrCtrl+Shift+A", click: () => sendStudioCommand("augment:start") },
+        { label: "Stop Augment Service", click: () => sendStudioCommand("augment:stop") },
         { label: "Fit Graph", accelerator: "CmdOrCtrl+0", click: () => sendStudioCommand("graph:fit") },
         { label: "Zoom Graph In", accelerator: "CmdOrCtrl+Plus", click: () => sendStudioCommand("graph:zoom-in") },
         { label: "Zoom Graph Out", accelerator: "CmdOrCtrl+-", click: () => sendStudioCommand("graph:zoom-out") },
@@ -384,9 +539,13 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => stopHugoPreview());
+app.on("before-quit", () => {
+  stopHugoPreview();
+  stopAugmentService();
+});
 app.on("window-all-closed", () => {
   stopHugoPreview();
+  stopAugmentService();
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -431,6 +590,570 @@ function normalizeWorkspace(ws) {
 async function refreshWorkspace() {
   if (!currentWorkspaceDir) return null;
   return normalizeWorkspace(await openWorkspace(currentWorkspaceDir));
+}
+
+const AUGMENT_TEXT_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".markdown",
+  ".json",
+  ".jsonl",
+  ".csv",
+  ".tsv",
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".html",
+  ".css",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
+
+function classifyAugmentFile(sourceFile) {
+  const ext = path.extname(sourceFile).toLowerCase();
+  const title = path.basename(sourceFile, ext).replace(/[-_]+/g, " ").trim() || "Imported source";
+  if (ext === ".pdf") {
+    return {
+      title,
+      sourceType: "pdf",
+      sourceText: fs.readFileSync(sourceFile).toString("base64")
+    };
+  }
+  if (AUGMENT_TEXT_EXTENSIONS.has(ext)) {
+    return {
+      title,
+      sourceType: "text",
+      sourceText: fs.readFileSync(sourceFile, "utf8")
+    };
+  }
+  return null;
+}
+
+function sessionBodyFromNode(node) {
+  const passage = String(node?.sourceFragment || node?.summary || "").trim();
+  if (!passage) return `# ${node?.title || "Untitled"}\n\n`;
+  return `# ${node?.title || "Untitled"}\n\n${passage}\n`;
+}
+
+function isWikipediaFileSource(session) {
+  return /wikipedia\.org\/wiki\/File:/i.test(String(session?.sourceUrl || ""));
+}
+
+function parseWikipediaFileMetadata(sourceText = "") {
+  const readLine = (label) => {
+    const match = String(sourceText).match(new RegExp(`^${label}:\\s*(.+)$`, "mi"));
+    return match?.[1]?.trim() || "";
+  };
+  const descriptionMatch = String(sourceText).match(/=== File Description ===\n([\s\S]+)/m);
+  return {
+    title: readLine("Wikipedia File"),
+    imageTitle: readLine("Image Title"),
+    pageUrl: readLine("File Page URL"),
+    mediaUrl: readLine("Media URL"),
+    mimeType: readLine("MIME Type"),
+    dimensions: readLine("Dimensions"),
+    fileSize: readLine("File Size"),
+    creator: readLine("Creator"),
+    copyrightHolder: readLine("Copyright Holder"),
+    date: readLine("Date"),
+    source: readLine("Source"),
+    credit: readLine("Credit"),
+    license: readLine("License"),
+    licenseUrl: readLine("License URL"),
+    description: descriptionMatch?.[1]?.trim() || ""
+  };
+}
+
+function wikipediaFileTitleFromUrl(url) {
+  const match = String(url || "").match(/(?:([a-z]{2,3})\.)?wikipedia\.org\/wiki\/(File:[^#?]+)/i);
+  if (!match) return { lang: "en", title: "" };
+  return {
+    lang: match[1] || "en",
+    title: decodeURIComponent(match[2]).replace(/_/g, " ")
+  };
+}
+
+async function fetchWikiImageInfoPage(apiBase, title) {
+  const params = new URLSearchParams({
+    action: "query",
+    titles: title,
+    prop: "imageinfo",
+    iiprop: "url|mime|extmetadata",
+    format: "json",
+    redirects: "1"
+  });
+  const response = await fetch(`${apiBase}?${params}`, {
+    headers: { "User-Agent": "XanaNodeStudio/1.0 (+https://xananode.com)" }
+  });
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => ({}));
+  const pages = data?.query?.pages || {};
+  const page = Object.values(pages)[0];
+  if (!page || page.missing) return null;
+  return page;
+}
+
+async function fetchOpenGraphImageUrl(pageUrl) {
+  if (!pageUrl) return "";
+  const response = await fetch(pageUrl, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; XanaNodeStudio/1.0; +https://xananode.com)" }
+  });
+  if (!response.ok) return "";
+  const html = await response.text();
+  const propertyMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+  if (propertyMatch?.[1]) return propertyMatch[1].trim();
+  const nameMatch = html.match(/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+  return nameMatch?.[1]?.trim() || "";
+}
+
+async function resolveWikipediaFileMediaMetadata(session, parsedMetadata = {}) {
+  const metadata = { ...parsedMetadata };
+  const { lang, title } = wikipediaFileTitleFromUrl(session?.sourceUrl || metadata.pageUrl || "");
+  if (!title) return metadata;
+
+  try {
+    const wikiPage = await fetchWikiImageInfoPage(`https://${lang}.wikipedia.org/w/api.php`, title);
+    const wikiInfo = wikiPage?.imageinfo?.[0];
+    if (wikiInfo?.url && !metadata.mediaUrl) metadata.mediaUrl = wikiInfo.url;
+    if (wikiInfo?.mime && !metadata.mimeType) metadata.mimeType = wikiInfo.mime;
+    if (wikiInfo?.descriptionurl && !metadata.pageUrl) metadata.pageUrl = wikiInfo.descriptionurl;
+    const wikiExt = wikiInfo?.extmetadata || {};
+    if (!metadata.title) metadata.title = wikiExt.ObjectName?.value?.replace(/<[^>]+>/g, "").trim() || wikiPage?.title || metadata.title;
+    if (!metadata.imageTitle) metadata.imageTitle = wikiExt.ObjectName?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.creator) metadata.creator = wikiExt.Artist?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.credit) metadata.credit = wikiExt.Credit?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.license) metadata.license = (wikiExt.LicenseShortName?.value || wikiExt.UsageTerms?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.licenseUrl) metadata.licenseUrl = wikiExt.LicenseUrl?.value?.trim() || "";
+    if (!metadata.description) metadata.description = wikiExt.ImageDescription?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.date) metadata.date = (wikiExt.DateTimeOriginal?.value || wikiExt.DateTime?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.source) metadata.source = (wikiExt.Credit?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.copyrightHolder) metadata.copyrightHolder = (wikiExt.Copyrighted?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.dimensions && wikiInfo?.width && wikiInfo?.height) metadata.dimensions = `${wikiInfo.width} x ${wikiInfo.height}`;
+    if (!metadata.fileSize && Number.isFinite(wikiInfo?.size)) metadata.fileSize = String(wikiInfo.size);
+  } catch (error) {
+    sendToRenderer("augment:log", `Wikipedia file resolver warning: ${error?.message || error}`);
+  }
+
+  try {
+    const commonsPage = await fetchWikiImageInfoPage("https://commons.wikimedia.org/w/api.php", title);
+    const commonsInfo = commonsPage?.imageinfo?.[0];
+    if (commonsInfo?.url && !metadata.mediaUrl) metadata.mediaUrl = commonsInfo.url;
+    if (commonsInfo?.mime && !metadata.mimeType) metadata.mimeType = commonsInfo.mime;
+    if (commonsInfo?.descriptionurl && !metadata.pageUrl) metadata.pageUrl = commonsInfo.descriptionurl;
+    const commonsExt = commonsInfo?.extmetadata || {};
+    if (!metadata.title) metadata.title = commonsExt.ObjectName?.value?.replace(/<[^>]+>/g, "").trim() || commonsPage?.title || metadata.title;
+    if (!metadata.imageTitle) metadata.imageTitle = commonsExt.ObjectName?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.creator) metadata.creator = commonsExt.Artist?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.credit) metadata.credit = commonsExt.Credit?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.license) metadata.license = (commonsExt.LicenseShortName?.value || commonsExt.UsageTerms?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.licenseUrl) metadata.licenseUrl = commonsExt.LicenseUrl?.value?.trim() || "";
+    if (!metadata.description) metadata.description = commonsExt.ImageDescription?.value?.replace(/<[^>]+>/g, "").trim() || "";
+    if (!metadata.date) metadata.date = (commonsExt.DateTimeOriginal?.value || commonsExt.DateTime?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.source) metadata.source = (commonsExt.Credit?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.copyrightHolder) metadata.copyrightHolder = (commonsExt.Credit?.value || "").replace(/<[^>]+>/g, "").trim();
+    if (!metadata.dimensions && commonsInfo?.width && commonsInfo?.height) metadata.dimensions = `${commonsInfo.width} x ${commonsInfo.height}`;
+    if (!metadata.fileSize && Number.isFinite(commonsInfo?.size)) metadata.fileSize = String(commonsInfo.size);
+  } catch (error) {
+    sendToRenderer("augment:log", `Commons file resolver warning: ${error?.message || error}`);
+  }
+
+  if (!metadata.mediaUrl) {
+    try {
+      metadata.mediaUrl = await fetchOpenGraphImageUrl(metadata.pageUrl || session?.sourceUrl || "");
+    } catch (error) {
+      sendToRenderer("augment:log", `Wikipedia og:image resolver warning: ${error?.message || error}`);
+    }
+  }
+
+  return metadata;
+}
+
+function mediaDetailsFromMimeOrUrl(mimeType, url) {
+  const mime = String(mimeType || "").toLowerCase();
+  const lowerUrl = String(url || "").toLowerCase();
+  if (mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)(?:$|\?)/i.test(lowerUrl)) {
+    return { subtype: "image", mediaType: "image" };
+  }
+  if (mime.startsWith("video/") || /\.(mp4|mov|m4v|webm)(?:$|\?)/i.test(lowerUrl)) {
+    return { subtype: "video", mediaType: "video" };
+  }
+  if (mime.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|flac)(?:$|\?)/i.test(lowerUrl)) {
+    return { subtype: "audio", mediaType: "audio" };
+  }
+  return { subtype: "document", mediaType: "document" };
+}
+
+function extensionFromMimeOrUrl(mimeType, url) {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime === "image/jpeg") return ".jpg";
+  if (mime === "image/png") return ".png";
+  if (mime === "image/gif") return ".gif";
+  if (mime === "image/webp") return ".webp";
+  if (mime === "image/svg+xml") return ".svg";
+  if (mime === "video/mp4") return ".mp4";
+  if (mime === "video/webm") return ".webm";
+  if (mime === "audio/mpeg") return ".mp3";
+  if (mime === "audio/wav") return ".wav";
+  try {
+    const pathname = new URL(String(url || "")).pathname;
+    const ext = path.extname(pathname);
+    return ext || ".bin";
+  } catch {
+    return ".bin";
+  }
+}
+
+async function downloadRemoteAssetToTemp(url, preferredName, mimeType = "") {
+  if (!url) throw new Error("No remote asset URL was provided.");
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; XanaNodeStudio/1.0; +https://xananode.com)",
+      Accept: "*/*"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to download remote asset: ${response.status} ${response.statusText}`);
+  }
+  const ext = extensionFromMimeOrUrl(mimeType || response.headers.get("content-type") || "", url);
+  const tempDir = path.join(app.getPath("temp"), "xananode-studio-augment");
+  fs.mkdirSync(tempDir, { recursive: true });
+  const fileName = `${slugify(preferredName || "captured-media", "captured-media")}${ext}`;
+  const tempPath = path.join(tempDir, fileName);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync(tempPath, buffer);
+  return tempPath;
+}
+
+function inferAugmentSourceSubtype(session, sourceFile) {
+  if (session?.sourceType === "github") return "git_repository";
+  if (session?.sourceType === "url") {
+    const url = String(session?.sourceUrl || "");
+    if (/wikipedia\.org\/wiki\/File:/i.test(url)) return "website";
+    if (/wikipedia\.org\/wiki\//i.test(url)) return "article";
+    if (/github\.com\//i.test(url)) return "git_repository";
+    return "website";
+  }
+  if (sourceFile) {
+    const ext = path.extname(sourceFile).toLowerCase();
+    if (ext === ".pdf") return "paper";
+    if ([".md", ".txt", ".rst", ".adoc"].includes(ext)) return "documentation";
+    if ([".csv", ".json", ".jsonl", ".xml", ".yaml", ".yml"].includes(ext)) return "dataset";
+  }
+  return "documentation";
+}
+
+function summarizeAugmentSource(session, sourceFile) {
+  if (session?.sourceType === "github") {
+    return "Repository captured through Augment and used as the source for extracted XanaNode candidates.";
+  }
+  if (session?.sourceType === "url") {
+    if (isWikipediaFileSource(session)) {
+      return "Wikipedia file page captured through Augment, preserving both file metadata and the downloadable media asset.";
+    }
+    if (/wikipedia\.org\/wiki\//i.test(String(session?.sourceUrl || ""))) {
+      return "Wikipedia article captured through Augment and used as the source for extracted XanaNode candidates.";
+    }
+    return "Website captured through Augment and used as the source for extracted XanaNode candidates.";
+  }
+  if (sourceFile) {
+    return "Local file captured through Augment and used as the source for extracted XanaNode candidates.";
+  }
+  return "Captured source used as the basis for extracted XanaNode candidates.";
+}
+
+function inferCompanionMediaDetails(sourceFile) {
+  if (!sourceFile) return null;
+  const ext = path.extname(sourceFile).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)) {
+    return { subtype: "image", mediaType: "image" };
+  }
+  if ([".mp4", ".mov", ".m4v", ".webm"].includes(ext)) {
+    return { subtype: "video", mediaType: "video" };
+  }
+  if ([".mp3", ".wav", ".m4a", ".ogg", ".flac"].includes(ext)) {
+    return { subtype: "audio", mediaType: "audio" };
+  }
+  return null;
+}
+
+async function ensureAugmentCompanionMediaNode(currentWorkspaceDir, sourceAnchor, session, sourceFile) {
+  const localSourceFile = sourceFile && fs.existsSync(sourceFile) ? sourceFile : null;
+  const mediaDetails = inferCompanionMediaDetails(localSourceFile);
+  if (!mediaDetails || !sourceAnchor?.data?.asset || !sourceAnchor?.relativeFile) return null;
+  const api = workspaceApi(currentWorkspaceDir);
+  const sourceTitle = sourceAnchor.data?.title || session?.title || (localSourceFile ? path.basename(localSourceFile, path.extname(localSourceFile)) : "Captured Source");
+  const mediaTitle = `${sourceTitle} Media`;
+  const mediaBody = `# ${mediaTitle}\n\nMedia companion for ${sourceTitle} captured through Augment.\n`;
+  const created = await api.createNode({
+    title: mediaTitle,
+    type: "media",
+    subtype: mediaDetails.subtype,
+    summary: `Media companion extracted from ${sourceTitle} during Augment intake.`,
+    asset: sourceAnchor.data.asset,
+    media_type: mediaDetails.mediaType,
+    captured_via: "augment",
+    augment_session_id: String(session?.id || "")
+  }, mediaBody);
+
+  const nextSourceRelationships = [
+    ...(Array.isArray(sourceAnchor.data.relationships) ? sourceAnchor.data.relationships : []),
+    {
+      type: "has_primary_media",
+      target: created.data.protocol_id,
+      summary: "Primary media captured alongside this Augment source."
+    }
+  ].filter((relationship, index, list) => {
+    const key = `${relationship.type}:${relationship.target}`;
+    return list.findIndex((item) => `${item.type}:${item.target}` === key) === index;
+  });
+
+  await api.updateNode(
+    sourceAnchor.relativeFile,
+    {
+      ...sourceAnchor.data,
+      relationships: nextSourceRelationships
+    },
+    sourceAnchor.body
+  );
+
+  return {
+    protocolId: created.data.protocol_id,
+    relativeFile: path.relative(currentWorkspaceDir, created.filePath),
+    data: created.data,
+    body: mediaBody
+  };
+}
+
+async function createAugmentSourceAnchor(currentWorkspaceDir, session, sourceFile) {
+  const api = workspaceApi(currentWorkspaceDir);
+  const localSourceFile = sourceFile && fs.existsSync(sourceFile) ? sourceFile : null;
+  if (sourceFile && !localSourceFile && /^https?:\/\//i.test(String(sourceFile))) {
+    sendToRenderer("augment:log", `Ignoring URL-like sourceFile during Augment apply: ${sourceFile}`);
+  }
+  if (localSourceFile) {
+    const imported = await api.importAsset(localSourceFile, {
+      title: session?.title || path.basename(localSourceFile, path.extname(localSourceFile)),
+      type: "source",
+      summary: summarizeAugmentSource(session, localSourceFile)
+    });
+    const workspace = await refreshWorkspace();
+    const anchorNode = workspace?.nodes?.find((node) => (
+      node.title === imported.nodeData?.title
+      || node.data?.asset === imported.nodeData?.asset
+      || node.data?.asset_path === imported.nodeData?.asset
+    )) || null;
+    return anchorNode ? {
+      protocolId: anchorNode.protocolId || anchorNode.protocol_id || anchorNode.id,
+      relativeFile: anchorNode.relativePath || anchorNode.path || anchorNode.filePath || anchorNode.__file,
+      data: anchorNode.data || anchorNode,
+      body: anchorNode.body || anchorNode.content || `# ${anchorNode.title || imported.nodeData?.title || "Source"}\n\n`
+    } : null;
+  }
+
+  if (session?.sourceType === "url" && isWikipediaFileSource(session)) {
+    const metadata = await resolveWikipediaFileMediaMetadata(session, parseWikipediaFileMetadata(session.sourceText || ""));
+    const mediaUrl = metadata.mediaUrl || session.sourceUrl;
+    if (!metadata.mediaUrl) {
+      throw new Error("Wikipedia file metadata did not include a downloadable media URL, and Studio could not resolve one from Wikipedia or Commons.");
+    }
+    const sourceTitle = metadata.title || session?.title || "Wikipedia File";
+    const mediaDetails = mediaDetailsFromMimeOrUrl(metadata.mimeType, mediaUrl);
+    const tempAsset = await downloadRemoteAssetToTemp(mediaUrl, sourceTitle.replace(/^File:\s*/i, ""), metadata.mimeType);
+    const importedSource = await api.importAsset(tempAsset, {
+      title: sourceTitle,
+      type: "source",
+      subtype: "website",
+      facets: ["media"],
+      media_type: mediaDetails.mediaType,
+      summary: summarizeAugmentSource(session, sourceFile),
+      source_name: "Wikipedia",
+      source_url: metadata.pageUrl || session.sourceUrl,
+      creator: metadata.creator || undefined,
+      rights_status: metadata.license || undefined,
+      license_url: metadata.licenseUrl || undefined
+    });
+    const relativeFile = path.relative(currentWorkspaceDir, importedSource.nodePath).replaceAll(path.sep, "/");
+    const sourceNodePath = path.resolve(importedSource.nodePath);
+    const parsedSourceNode = fs.existsSync(sourceNodePath)
+      ? parseFrontMatter(fs.readFileSync(sourceNodePath, "utf8"), sourceNodePath)
+      : { data: importedSource.nodeData, body: "" };
+    const sourceNodeData = parsedSourceNode?.data || importedSource.nodeData || {};
+
+    const sourceBody = [
+      `# ${sourceTitle}`,
+      "",
+      metadata.description || `Captured from ${metadata.pageUrl || session.sourceUrl}.`,
+      metadata.imageTitle ? `\nImage title: ${metadata.imageTitle}` : "",
+      metadata.creator ? `\nCreator: ${metadata.creator}` : "",
+      metadata.copyrightHolder ? `\nCopyright holder: ${metadata.copyrightHolder}` : "",
+      metadata.date ? `\nDate: ${metadata.date}` : "",
+      metadata.source ? `\nSource: ${metadata.source}` : "",
+      metadata.credit ? `\nCredit: ${metadata.credit}` : "",
+      metadata.license ? `\nLicense: ${metadata.license}` : "",
+      metadata.licenseUrl ? `\nLicense URL: ${metadata.licenseUrl}` : "",
+      metadata.dimensions ? `\nDimensions: ${metadata.dimensions}` : "",
+      metadata.fileSize ? `\nFile size: ${metadata.fileSize}` : ""
+    ].join("\n").trim() + "\n";
+    const nextData = {
+      ...sourceNodeData,
+      title: sourceTitle,
+      type: "source",
+      subtype: "website",
+      facets: Array.from(new Set([...(Array.isArray(sourceNodeData?.facets) ? sourceNodeData.facets : []), "media"])),
+      summary: summarizeAugmentSource(session, sourceFile),
+      source_url: metadata.pageUrl || session.sourceUrl,
+      source_name: "Wikipedia",
+      creator: metadata.creator || undefined,
+      copyright_holder: metadata.copyrightHolder || undefined,
+      original_date: metadata.date || undefined,
+      source_credit: metadata.credit || undefined,
+      rights_status: metadata.license || undefined,
+      license_url: metadata.licenseUrl || undefined,
+      media_type: mediaDetails.mediaType,
+      captured_via: "augment",
+      augment_session_id: String(session?.id || "")
+    };
+    await api.updateNode(relativeFile, nextData, sourceBody);
+
+    return {
+      protocolId: nextData.protocol_id || sourceNodeData.protocol_id || sourceNodeData.id,
+      relativeFile,
+      data: nextData,
+      body: sourceBody
+    };
+  }
+
+  const title = session?.title || "Captured Source";
+  const subtype = inferAugmentSourceSubtype(session, sourceFile);
+  const sourceUrl = session?.sourceUrl || undefined;
+  const body = `# ${title}\n\n${sourceUrl ? `Captured from ${sourceUrl}.\n` : "Captured through Augment.\n"}`;
+  const created = await api.createNode({
+    title,
+    type: "source",
+    subtype,
+    summary: summarizeAugmentSource(session, sourceFile),
+    source_url: sourceUrl,
+    captured_via: "augment",
+    augment_session_id: String(session?.id || "")
+  }, body);
+  return {
+    protocolId: created.data.protocol_id,
+    relativeFile: path.relative(currentWorkspaceDir, created.filePath),
+    data: created.data,
+    body
+  };
+}
+
+async function applyAugmentSessionToWorkspace(sessionId, options = {}) {
+  if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+  if (options.acceptPendingNodes !== false) {
+    await callAugment(`/api/sessions/${sessionId}/bulk-review`, {
+      method: "POST",
+      body: { status: "accepted", kindFilter: "node" }
+    });
+  }
+  if (options.acceptPendingRelationships === true) {
+    await callAugment(`/api/sessions/${sessionId}/bulk-review`, {
+      method: "POST",
+      body: { status: "accepted", kindFilter: "relationship" }
+    });
+  }
+
+  const latestSession = await callAugment(`/api/sessions/${sessionId}`);
+  const session = {
+    ...(options.session || {}),
+    ...(latestSession || {})
+  };
+  if (isWikipediaFileSource(session)) {
+    const sourceAnchor = await createAugmentSourceAnchor(currentWorkspaceDir, session, options.sourceFile);
+    if (!sourceAnchor) {
+      throw new Error("Wikipedia file intake could not create the source node.");
+    }
+    return sanitizeForIpc({
+      sessionId,
+      importedNodeCount: 1,
+      importedRelationshipCount: 0,
+      workspace: await refreshWorkspace()
+    });
+  }
+
+  const substrate = await callAugment(`/api/sessions/${sessionId}/substrate`);
+  const api = workspaceApi(currentWorkspaceDir);
+  const createdByRemoteId = new Map();
+  const sourceAnchor = await createAugmentSourceAnchor(currentWorkspaceDir, session, options.sourceFile);
+  if (sourceAnchor) {
+    await ensureAugmentCompanionMediaNode(currentWorkspaceDir, sourceAnchor, session, options.sourceFile);
+  }
+
+  for (const node of substrate.nodes || []) {
+    const body = sessionBodyFromNode(node);
+    const created = await api.createNode({
+      title: node.title,
+      type: node.type || "concept",
+      summary: node.summary || "",
+      source_fragment: node.sourceFragment || undefined,
+      captured_via: "augment",
+      augment_session_id: String(sessionId)
+    }, body);
+    createdByRemoteId.set(node.id, {
+      protocolId: created.data.protocol_id,
+      relativeFile: path.relative(currentWorkspaceDir, created.filePath),
+      data: created.data,
+      body
+    });
+  }
+
+  const relationshipsBySource = new Map();
+  if (sourceAnchor?.protocolId) {
+    relationshipsBySource.set("__augment_source_anchor__", []);
+  }
+  for (const relationship of substrate.relationships || []) {
+    const sourceNode = createdByRemoteId.get(relationship.from);
+    const targetNode = createdByRemoteId.get(relationship.to);
+    if (!sourceNode || !targetNode) continue;
+    if (!relationshipsBySource.has(relationship.from)) {
+      relationshipsBySource.set(relationship.from, []);
+    }
+    relationshipsBySource.get(relationship.from).push({
+      type: relationship.type || "related_to",
+      target: targetNode.protocolId,
+      summary: relationship.title || ""
+    });
+  }
+
+  if (sourceAnchor?.protocolId) {
+    for (const createdNode of createdByRemoteId.values()) {
+      relationshipsBySource.get("__augment_source_anchor__").push({
+        type: "documents",
+        target: createdNode.protocolId,
+        summary: "This captured source documents the connected node extracted during Augment intake."
+      });
+    }
+  }
+
+  for (const [remoteId, nextRelationships] of relationshipsBySource.entries()) {
+    const createdNode = remoteId === "__augment_source_anchor__" ? sourceAnchor : createdByRemoteId.get(remoteId);
+    if (!createdNode) continue;
+    await api.updateNode(
+      createdNode.relativeFile,
+      {
+        ...createdNode.data,
+        relationships: nextRelationships
+      },
+      createdNode.body
+    );
+  }
+
+  return sanitizeForIpc({
+    sessionId,
+    importedNodeCount: createdByRemoteId.size,
+    importedRelationshipCount: (substrate.relationships || []).filter((relationship) => (
+      createdByRemoteId.has(relationship.from) && createdByRemoteId.has(relationship.to)
+    )).length,
+    workspace: await refreshWorkspace()
+  });
 }
 
 ipcMain.handle("dialog:openWorkspace", async () => {
@@ -558,12 +1281,34 @@ ipcMain.handle("workspace:importAssets", async () => {
       properties: ["openFile", "multiSelections"]
     });
     if (result.canceled || !result.filePaths.length) return ok({ canceled: true });
+    const sessions = [];
     const imported = [];
     const analysisContext = await createIntakeAnalysisContext(currentWorkspaceDir);
     for (const sourceFile of result.filePaths) {
+      const augmentInput = classifyAugmentFile(sourceFile);
+      if (augmentInput) {
+        sendToRenderer("augment:log", `Augment intake: ${path.basename(sourceFile)}`);
+        const session = await callAugment("/api/sessions", {
+          method: "POST",
+          body: augmentInput
+        });
+        await callAugment(`/api/sessions/${session.id}/extract`, { method: "POST" });
+        const candidates = await callAugment(`/api/sessions/${session.id}/candidates`);
+        sessions.push(sanitizeForIpc({
+          sourceFile,
+          session,
+          candidates
+        }));
+        continue;
+      }
       imported.push(await importAssetAsNode(currentWorkspaceDir, sourceFile, { analysisContext }));
     }
-    return ok({ imported, workspace: await refreshWorkspace() });
+    return ok({
+      imported,
+      sessions,
+      workspace: imported.length ? await refreshWorkspace() : undefined,
+      augment: sessions.length ? augmentStatusPayload({ ready: true }) : undefined
+    });
   } catch (error) {
     return fail(error);
   }
@@ -706,6 +1451,122 @@ ipcMain.handle("workspace:openInShell", async (_, targetPath) => {
 });
 
 ipcMain.handle("app:metadata", async () => ok({ metadata: appMetadata }));
+
+ipcMain.handle("augment:status", async () => {
+  try {
+    const ready = augmentService.url ? await waitForAugmentHealth(augmentService.url, 500) : false;
+    return ok({ augment: augmentStatusPayload({ ready }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:start", async (_, payload = {}) => {
+  try {
+    const augment = await startAugmentService({ port: payload.port });
+    return ok({ augment });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:stop", async () => {
+  try {
+    stopAugmentService();
+    return ok({ augment: augmentStatusPayload({ ready: false }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:createSession", async (_, payload = {}) => {
+  try {
+    const session = await callAugment("/api/sessions", {
+      method: "POST",
+      body: {
+        title: payload.title,
+        sourceType: payload.sourceType,
+        sourceText: payload.sourceText ?? null,
+        sourceUrl: payload.sourceUrl ?? null
+      }
+    });
+    return ok({ session: sanitizeForIpc(session), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:extractSession", async (_, payload = {}) => {
+  try {
+    const result = await callAugment(`/api/sessions/${payload.sessionId}/extract`, { method: "POST" });
+    return ok({ result: sanitizeForIpc(result), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:listCandidates", async (_, payload = {}) => {
+  try {
+    const candidates = await callAugment(`/api/sessions/${payload.sessionId}/candidates`);
+    return ok({ candidates: sanitizeForIpc(candidates), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:bulkReview", async (_, payload = {}) => {
+  try {
+    const result = await callAugment(`/api/sessions/${payload.sessionId}/bulk-review`, {
+      method: "POST",
+      body: {
+        status: payload.status,
+        kindFilter: payload.kindFilter ?? null
+      }
+    });
+    return ok({ result: sanitizeForIpc(result), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:updateCandidate", async (_, payload = {}) => {
+  try {
+    const result = await callAugment(`/api/candidates/${payload.candidateId}`, {
+      method: "PATCH",
+      body: payload
+    });
+    return ok({ result: sanitizeForIpc(result), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:suggestRelationships", async (_, payload = {}) => {
+  try {
+    const result = await callAugment(`/api/sessions/${payload.sessionId}/suggest-relationships`, { method: "POST" });
+    return ok({ result: sanitizeForIpc(result), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("augment:getSubstrate", async (_, payload = {}) => {
+  try {
+    const substrate = await callAugment(`/api/sessions/${payload.sessionId}/substrate`);
+    return ok({ substrate: sanitizeForIpc(substrate), augment: augmentStatusPayload({ ready: true }) });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:applyAugmentSession", async (_, payload = {}) => {
+  try {
+    const result = await applyAugmentSessionToWorkspace(payload.sessionId, payload);
+    return ok(result);
+  } catch (error) {
+    return fail(error);
+  }
+});
 
 ipcMain.handle("preview:startHugo", async () => startHugoPreview());
 
@@ -1012,10 +1873,7 @@ function createWorkspaceHugoProjection(workspaceDir) {
   const localThemeRoot = path.join(projectionRoot, "themes", "xananode-hugo");
   fs.mkdirSync(path.dirname(localThemeRoot), { recursive: true });
 
-  const workspaceContent = path.join(workspaceDir, "content");
-  if (fs.existsSync(workspaceContent)) {
-    fs.cpSync(workspaceContent, path.join(projectionRoot, "content"), { recursive: true, force: true });
-  }
+  syncWorkspaceProjectionFiles(workspaceDir, projectionRoot);
 
   const manifest = readPackManifest(workspaceDir);
   const importReferences = readWorkspaceImportReferences(workspaceDir, projectionRoot);
@@ -1075,6 +1933,84 @@ function createWorkspaceHugoProjection(workspaceDir) {
 
   sendToRenderer("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
   return projectionRoot;
+}
+
+function syncWorkspaceProjectionFiles(workspaceDir, projectionRoot) {
+  const workspaceContent = path.join(workspaceDir, "content");
+  const targetContent = path.join(projectionRoot, "content");
+  if (fs.existsSync(workspaceContent)) {
+    fs.cpSync(workspaceContent, targetContent, { recursive: true, force: true });
+    dedupeProjectionMarkdownNodes(targetContent);
+  }
+  const workspaceAssets = path.join(workspaceDir, "assets");
+  if (fs.existsSync(workspaceAssets)) {
+    fs.cpSync(workspaceAssets, path.join(projectionRoot, "assets"), { recursive: true, force: true });
+  }
+}
+
+function dedupeProjectionMarkdownNodes(contentRoot) {
+  if (!fs.existsSync(contentRoot)) return;
+  const markdownFiles = collectMarkdownFiles(contentRoot);
+  const grouped = new Map();
+  for (const fullPath of markdownFiles) {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf8");
+      const parsed = parseFrontMatter(raw, fullPath);
+      const protocolId = parsed?.data?.protocol_id || parsed?.data?.protocolId || "";
+      if (!protocolId) continue;
+      const stat = fs.statSync(fullPath);
+      const current = grouped.get(protocolId);
+      if (!current || stat.mtimeMs > current.mtimeMs) {
+        grouped.set(protocolId, { fullPath, mtimeMs: stat.mtimeMs, raw });
+      }
+    } catch {
+      // Leave unreadable files in place; build validation can report them later.
+    }
+  }
+
+  const keepPaths = new Set(Array.from(grouped.values()).map((entry) => path.resolve(entry.fullPath)));
+  for (const fullPath of markdownFiles) {
+    try {
+      const raw = fs.readFileSync(fullPath, "utf8");
+      const parsed = parseFrontMatter(raw, fullPath);
+      const protocolId = parsed?.data?.protocol_id || parsed?.data?.protocolId || "";
+      if (!protocolId) continue;
+      if (!keepPaths.has(path.resolve(fullPath)) && fs.existsSync(fullPath)) {
+        fs.rmSync(fullPath, { force: true });
+      } else if (parsed?.data?.protocolId || parsed?.data?.relativeFile || parsed?.data?.relativePath || parsed?.data?.source_file) {
+        const nextData = { ...(parsed.data || {}) };
+        delete nextData.protocolId;
+        delete nextData.relativeFile;
+        delete nextData.relativePath;
+        delete nextData.source_file;
+        writeCleanFrontMatter(fullPath, nextData, parsed.body || "");
+      }
+    } catch {
+      // Ignore unreadable files here and let the normal build path surface them.
+    }
+  }
+}
+
+function collectMarkdownFiles(rootDir) {
+  const files = [];
+  walkProjectionDir(rootDir, files);
+  return files;
+}
+
+function walkProjectionDir(currentDir, files) {
+  for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+    const fullPath = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      walkProjectionDir(fullPath, files);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+}
+
+function writeCleanFrontMatter(filePath, data, body) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, stringifyFrontMatter(data, body));
 }
 
 function previewProjectionRoot(workspaceDir) {

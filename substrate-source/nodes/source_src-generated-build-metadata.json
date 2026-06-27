@@ -12,13 +12,13 @@
   "media_type": "document",
   "mime_type": "text/javascript",
   "rights_status": "Apache-2.0",
-  "content_id": "sha256:6f045e6fd5282533101c105620c522d28a05c812dce374fc23b3463cf3139891",
-  "content": "{\n  \"name\": \"@xananode/studio\",\n  \"product_name\": \"XanaNode Studio\",\n  \"version\": \"0.1.0\",\n  \"built_at\": \"2026-06-25T14:00:18.814Z\",\n  \"git_commit\": \"495c05f4b79e5ba677fb855b7d9333238146e84b\",\n  \"git_branch\": \"main\",\n  \"repository\": \"kingc95/XanaNode-Studio\",\n  \"runtime\": \"node v24.16.0\",\n  \"platform\": \"win32/x64\",\n  \"dependencies\": {\n    \"workspace\": \"3a698f00454720731ef043294dedf64ba5316240\",\n    \"hugo_theme\": \"cf5312a10a6bb354442f7ab21fd5679ed614b3a4\",\n    \"core_sdk\": \"b29928be095f94f10f92a365015a5a471d0ba825\",\n    \"protocol\": \"9973dcfb1191a0dd55be6be5ec022aba7f7ee5c8\"\n  }\n}\n",
+  "content_id": "sha256:afa5b87444f2a770f05d9b6d28a032e09816013433d769ecf6b19b8e65db965e",
+  "content": "{\n  \"name\": \"@xananode/studio\",\n  \"product_name\": \"XanaNode Studio\",\n  \"version\": \"0.1.0\",\n  \"built_at\": \"2026-06-27T04:59:31.747Z\",\n  \"git_commit\": \"096cf426b05e54c21fb53de47a5ff2d80e8012af\",\n  \"git_branch\": \"main\",\n  \"repository\": \"kingc95/XanaNode-Studio\",\n  \"runtime\": \"node v24.16.0\",\n  \"platform\": \"win32/x64\",\n  \"dependencies\": {\n    \"workspace\": \"a66c75c8b1e342d9dd141dd52f09020c61637af0\",\n    \"hugo_theme\": \"1541ec2f5d36f4c8c3f978b849b89c1398d9ff2e\",\n    \"core_sdk\": \"08ee42fc795dbb2fea499196f3bc4851c2ebca4d\",\n    \"protocol\": \"2157f16df0944df0e4ba101458dc967a2abeb0cb\"\n  }\n}\n",
   "source_snapshot": {
-    "captured_at": "2026-06-25T14:24:42.948Z",
+    "captured_at": "2026-06-27T07:05:44.386Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/src/generated/build-metadata.json",
     "method": "archive",
-    "content_id": "sha256:6f045e6fd5282533101c105620c522d28a05c812dce374fc23b3463cf3139891",
+    "content_id": "sha256:afa5b87444f2a770f05d9b6d28a032e09816013433d769ecf6b19b8e65db965e",
     "rights_status": "Apache-2.0",
     "tool": "xananode-studio/tools/build-substrate-source.mjs"
   },

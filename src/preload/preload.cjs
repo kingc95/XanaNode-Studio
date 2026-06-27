@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("xananode", {
   planNodeDeletion: (payload) => ipcRenderer.invoke("workspace:planNodeDeletion", payload),
   deleteNode: (payload) => ipcRenderer.invoke("workspace:deleteNode", payload),
   importAssets: () => ipcRenderer.invoke("workspace:importAssets"),
+  applyAugmentSession: (payload) => ipcRenderer.invoke("workspace:applyAugmentSession", payload),
   saveSnapshot: (payload) => ipcRenderer.invoke("workspace:saveSnapshot", payload),
   build: (payload) => ipcRenderer.invoke("workspace:build", payload),
   exportSubstrate: () => ipcRenderer.invoke("workspace:exportSubstrate"),
@@ -26,6 +27,16 @@ contextBridge.exposeInMainWorld("xananode", {
   openFederationTarget: (payload) => ipcRenderer.invoke("workspace:openFederationTarget", payload),
   validate: () => ipcRenderer.invoke("workspace:validate"),
   openInShell: (targetPath) => ipcRenderer.invoke("workspace:openInShell", targetPath),
+  augmentStatus: () => ipcRenderer.invoke("augment:status"),
+  startAugment: (payload) => ipcRenderer.invoke("augment:start", payload),
+  stopAugment: () => ipcRenderer.invoke("augment:stop"),
+  augmentCreateSession: (payload) => ipcRenderer.invoke("augment:createSession", payload),
+  augmentExtractSession: (payload) => ipcRenderer.invoke("augment:extractSession", payload),
+  augmentListCandidates: (payload) => ipcRenderer.invoke("augment:listCandidates", payload),
+  augmentBulkReview: (payload) => ipcRenderer.invoke("augment:bulkReview", payload),
+  augmentUpdateCandidate: (payload) => ipcRenderer.invoke("augment:updateCandidate", payload),
+  augmentSuggestRelationships: (payload) => ipcRenderer.invoke("augment:suggestRelationships", payload),
+  augmentGetSubstrate: (payload) => ipcRenderer.invoke("augment:getSubstrate", payload),
   startHugoPreview: () => ipcRenderer.invoke("preview:startHugo"),
   rebuildHugoPreview: () => ipcRenderer.invoke("preview:rebuildHugo"),
   stopHugoPreview: () => ipcRenderer.invoke("preview:stopHugo"),
@@ -49,5 +60,15 @@ contextBridge.exposeInMainWorld("xananode", {
     const listener = (_, message) => callback(message);
     ipcRenderer.on("workspace:progress", listener);
     return () => ipcRenderer.removeListener("workspace:progress", listener);
+  },
+  onAugmentLog: (callback) => {
+    const listener = (_, message) => callback(message);
+    ipcRenderer.on("augment:log", listener);
+    return () => ipcRenderer.removeListener("augment:log", listener);
+  },
+  onAugmentStopped: (callback) => {
+    const listener = (_, message) => callback(message);
+    ipcRenderer.on("augment:stopped", listener);
+    return () => ipcRenderer.removeListener("augment:stopped", listener);
   }
 });

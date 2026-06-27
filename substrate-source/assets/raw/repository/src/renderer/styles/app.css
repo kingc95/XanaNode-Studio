@@ -1071,6 +1071,86 @@ summary {
   width: min(500px, 100%);
 }
 
+.setup-panel.intake-panel {
+  width: min(980px, 100%);
+  max-height: min(88vh, 980px);
+  overflow: auto;
+}
+
+.setup-panel.chooser-panel {
+  width: min(760px, 100%);
+}
+
+.chooser-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.chooser-block {
+  margin-top: 1rem;
+}
+
+.intake-session-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.intake-session-card {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.intake-candidate-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+}
+
+.intake-candidate {
+  padding: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.intake-candidate.accepted {
+  border-color: rgba(85, 214, 190, 0.34);
+  background: rgba(85, 214, 190, 0.08);
+}
+
+.intake-candidate.rejected {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.candidate-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.candidate-actions button.active-chip {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--xana-text);
+}
+
+.intake-candidate blockquote {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border-left: 3px solid rgba(85, 214, 190, 0.5);
+  background: rgba(5, 7, 10, 0.52);
+  border-radius: 0.55rem;
+  color: var(--xana-text);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .icon-button {
   width: 32px;
   height: 32px;
@@ -1099,6 +1179,8 @@ summary {
 
 .editor-group {
   padding: 0.9rem 0 0.25rem;
+  display: grid;
+  gap: 0.45rem;
 }
 
 .editor-empty {
@@ -1149,9 +1231,10 @@ summary {
 }
 
 .body-editor {
-  min-height: 260px;
+  min-height: 360px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92rem;
+  line-height: 1.55;
 }
 
 .field-help {
@@ -1223,7 +1306,9 @@ summary {
 }
 
 .editor-fold-body {
-  padding-top: 0.55rem;
+  padding-top: 0.7rem;
+  display: grid;
+  gap: 0.55rem;
 }
 
 .editor-fold-body > :first-child {
@@ -1263,7 +1348,7 @@ summary {
 
 .relationship-catalog {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.65rem;
 }
 
 .relationship-filters,
@@ -1279,7 +1364,7 @@ summary {
 }
 
 .relationship-type-list {
-  max-height: 220px;
+  max-height: 180px;
   overflow: auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
@@ -1319,6 +1404,12 @@ summary {
   padding: 0.45rem 0.55rem;
   margin: 0.35rem 0;
   color: #cbd5e1;
+}
+
+.relationship-definition,
+.trail-sequence-list {
+  display: grid;
+  gap: 0.55rem;
 }
 
 .relationship-chip-main,

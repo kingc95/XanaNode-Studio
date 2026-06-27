@@ -15,7 +15,7 @@
   "content_id": "sha256:084bd3e5d414fa11dfd09cf01156c774e025a99b2801db231a9ea069bda09da0",
   "content": "SPDX-License-Identifier: Apache-2.0\n\nXanaNode Studio reference application code and tooling are licensed under the Apache License, Version 2.0.\n\nSee: https://www.apache.org/licenses/LICENSE-2.0\n\nThe XanaNode name and logo are trademarks of the XanaNode project. This license does not grant trademark rights.\n\n",
   "source_snapshot": {
-    "captured_at": "2026-06-25T14:24:42.948Z",
+    "captured_at": "2026-06-27T07:05:44.386Z",
     "source_url": "https://github.com/kingc95/XanaNode-Studio/blob/main/LICENSE",
     "method": "archive",
     "content_id": "sha256:084bd3e5d414fa11dfd09cf01156c774e025a99b2801db231a9ea069bda09da0",
