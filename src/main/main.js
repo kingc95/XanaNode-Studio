@@ -17,11 +17,13 @@ import {
   validateWorkspace,
   computeKnowledgeHealth,
   createNode,
+  createRelationshipNode,
   createIntakeAnalysisContext,
   importAssetAsNode,
   inspectSubstratePackage,
   openPackAsWorkspace,
   updateNode,
+  collapseRelationshipNode,
   planNodeDeletion,
   deleteNode,
   workspaceApi
@@ -37,6 +39,7 @@ const appMetadata = readAppMetadata();
 let mainWindow = null;
 let currentWorkspaceDir = null;
 let hugoProcess = null;
+let currentHugoPreviewRoot = null;
 let augmentProcess = null;
 let augmentService = {
   port: null,
@@ -272,21 +275,19 @@ function installAppMenu() {
       label: "XanaNode",
       submenu: [
         { label: "Graph Projection", accelerator: "CmdOrCtrl+1", click: () => sendStudioCommand("projection:graph") },
-        { label: "Hugo Projection", accelerator: "CmdOrCtrl+2", click: () => sendStudioCommand("projection:hugo") },
+        { label: "Preview Projection", accelerator: "CmdOrCtrl+2", click: () => sendStudioCommand("projection:hugo") },
         { label: "Both Projections", accelerator: "CmdOrCtrl+3", click: () => sendStudioCommand("projection:both") },
         { type: "separator" },
         { label: "Run Health Check", accelerator: "CmdOrCtrl+Shift+H", click: () => sendStudioCommand("workspace:health") },
-        { label: "Build Artifacts", accelerator: "CmdOrCtrl+B", click: () => sendStudioCommand("workspace:build") },
+        { label: "Build Substrate", accelerator: "CmdOrCtrl+B", click: () => sendStudioCommand("workspace:build") },
         { label: "Export .substrate", accelerator: "CmdOrCtrl+E", click: () => sendStudioCommand("substrate:export") },
-        { label: "Start Hugo Projection", accelerator: "CmdOrCtrl+Shift+P", click: () => sendStudioCommand("preview:start") },
+        { label: "Build Preview", accelerator: "CmdOrCtrl+Shift+P", click: () => sendStudioCommand("preview:start") },
         { label: "Start Augment Service", accelerator: "CmdOrCtrl+Shift+A", click: () => sendStudioCommand("augment:start") },
         { label: "Stop Augment Service", click: () => sendStudioCommand("augment:stop") },
         { label: "Fit Graph", accelerator: "CmdOrCtrl+0", click: () => sendStudioCommand("graph:fit") },
         { label: "Zoom Graph In", accelerator: "CmdOrCtrl+Plus", click: () => sendStudioCommand("graph:zoom-in") },
         { label: "Zoom Graph Out", accelerator: "CmdOrCtrl+-", click: () => sendStudioCommand("graph:zoom-out") },
         { label: "Reset Graph View", accelerator: "CmdOrCtrl+Shift+0", click: () => sendStudioCommand("graph:reset") },
-        { type: "separator" },
-        { label: "Rebuild Hugo Projection", accelerator: "CmdOrCtrl+R", click: () => sendStudioCommand("preview:rebuild") },
         { label: "Validate Workspace", accelerator: "CmdOrCtrl+Shift+V", click: () => sendStudioCommand("workspace:validate") }
       ]
     },
@@ -1048,7 +1049,7 @@ async function createAugmentSourceAnchor(currentWorkspaceDir, session, sourceFil
 
 async function applyAugmentSessionToWorkspace(sessionId, options = {}) {
   if (!currentWorkspaceDir) throw new Error("No workspace is open.");
-  if (options.acceptPendingNodes !== false) {
+  if (options.acceptPendingNodes === true) {
     await callAugment(`/api/sessions/${sessionId}/bulk-review`, {
       method: "POST",
       body: { status: "accepted", kindFilter: "node" }
@@ -1237,6 +1238,7 @@ ipcMain.handle("workspace:createNode", async (_, payload) => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const result = await createNode(currentWorkspaceDir, payload.node, payload.body || "", payload.options || {});
+    await refreshRunningHugoPreview("Node created");
     return ok({ result, workspace: await refreshWorkspace() });
   } catch (error) {
     return fail(error);
@@ -1247,7 +1249,30 @@ ipcMain.handle("workspace:updateNode", async (_, payload) => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const result = await updateNode(currentWorkspaceDir, payload.relativeFile, payload.nodeData, payload.body, payload.options || {});
+    await refreshRunningHugoPreview("Node updated");
     return ok({ result, workspace: await refreshWorkspace() });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:createRelationshipNode", async (_, payload) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const result = await createRelationshipNode(currentWorkspaceDir, payload.relationship, payload.options || {});
+    await refreshRunningHugoPreview("Relationship node created");
+    return ok({ result, workspace: await refreshWorkspace() });
+  } catch (error) {
+    return fail(error);
+  }
+});
+
+ipcMain.handle("workspace:collapseRelationshipNode", async (_, payload) => {
+  try {
+    if (!currentWorkspaceDir) throw new Error("No workspace is open.");
+    const result = await collapseRelationshipNode(currentWorkspaceDir, payload.nodeRef, payload.options || {});
+    await refreshRunningHugoPreview("Relationship node collapsed");
+    return ok({ result, workspace: result.workspace || await refreshWorkspace() });
   } catch (error) {
     return fail(error);
   }
@@ -1267,6 +1292,7 @@ ipcMain.handle("workspace:deleteNode", async (_, payload) => {
   try {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const result = await deleteNode(currentWorkspaceDir, payload.nodeRef, payload.options || {});
+    await refreshRunningHugoPreview("Node deleted");
     return ok({ result, workspace: normalizeWorkspace(result.workspace) });
   } catch (error) {
     return fail(error);
@@ -1319,6 +1345,7 @@ ipcMain.handle("workspace:saveSnapshot", async (_, payload = {}) => {
     if (!currentWorkspaceDir) throw new Error("No workspace is open.");
     const api = workspaceApi(currentWorkspaceDir);
     const result = api.git.saveSnapshot({ message: payload.message || "Save XanaNode workspace snapshot" });
+    await refreshRunningHugoPreview("Snapshot saved");
     return ok({ result, workspace: await refreshWorkspace() });
   } catch (error) {
     return fail(error);
@@ -1333,6 +1360,7 @@ ipcMain.handle("workspace:build", async (_, payload = {}) => {
         suggestionMode: payload.suggestionMode || "review"
       }
     });
+    await refreshRunningHugoPreview("Workspace built");
     return ok({ result });
   } catch (error) {
     return fail(error);
@@ -1580,9 +1608,10 @@ async function startHugoPreview({ rebuild = false } = {}) {
       throw new Error("This substrate was created without a Hugo projection. Use Graph Projection, or create a workspace with Hugo enabled.");
     }
     const preview = resolvePreviewInvocation(currentWorkspaceDir, ws.settings?.preview);
-    sendToRenderer("preview:log", `${rebuild ? "Rebuilding" : "Starting"} Hugo projection...\n`);
+    sendToRenderer("preview:log", `${rebuild ? "Rebuilding" : "Building"} preview artifacts...\n`);
     stopHugoPreview();
     await preparePreviewArtifacts(preview.cwd);
+    currentHugoPreviewRoot = preview.cwd;
     const invocation = await resolveHugoServerInvocation(preview);
     const previewProcess = spawn(invocation.cmd, invocation.args, { cwd: preview.cwd, shell: false });
     hugoProcess = previewProcess;
@@ -1615,6 +1644,17 @@ function stopHugoPreview() {
     hugoProcess.kill("SIGTERM");
   }
   hugoProcess = null;
+  currentHugoPreviewRoot = null;
+}
+
+async function refreshRunningHugoPreview(reason = "Workspace changed") {
+  if (!hugoProcess || !currentHugoPreviewRoot) return false;
+  sendToRenderer("preview:log", `${reason}; syncing running Hugo preview...\n`);
+  if (currentWorkspaceDir && path.resolve(currentWorkspaceDir) !== path.resolve(currentHugoPreviewRoot)) {
+    syncWorkspaceProjectionFiles(currentWorkspaceDir, currentHugoPreviewRoot);
+  }
+  await preparePreviewArtifacts(currentHugoPreviewRoot);
+  return true;
 }
 
 async function runPreviewPreparation(siteRoot) {
@@ -1704,7 +1744,9 @@ async function preparePreviewArtifacts(siteRoot) {
 
   const outputDir = path.join(siteRoot, "static");
   const result = await buildWorkspace(siteRoot, { out: outputDir });
-  writeHugoIndexJson(outputDir, result.substrate);
+  const viewerFeed = writeHugoIndexJson(outputDir, result.substrate);
+  writePreviewViewerJson(outputDir, viewerFeed);
+  syncPreviewFallbackStaticAssets(outputDir);
 }
 
 function syncPreviewThemeBridge(siteRoot) {
@@ -1739,7 +1781,14 @@ function resolveBundledHugoRoot() {
 
 function writeHugoIndexJson(outputDir, substrate) {
   const protocolNodes = substrate.protocolNodes || [];
-  const protocolToLocal = new Map(protocolNodes.map((node) => [node.id, node.local_id || localIdFromProtocolId(node.id)]));
+  // Build a map from every possible ID form (protocol ID, local_id, derived local slug) to the local id
+  const protocolToLocal = new Map();
+  for (const node of protocolNodes) {
+    const localId = node.local_id || localIdFromProtocolId(node.id);
+    protocolToLocal.set(node.id, localId);                     // full protocol id: "ns:type/slug"
+    if (node.local_id) protocolToLocal.set(node.local_id, localId);  // explicit local_id
+    protocolToLocal.set(localId, localId);                     // local id maps to itself
+  }
   const nodes = protocolNodes
     .filter((node) => node.type !== "fragment")
     .map((node) => {
@@ -1756,9 +1805,11 @@ function writeHugoIndexJson(outputDir, substrate) {
         content: stripMarkdown(node.body || "").slice(0, 1200),
         image: node.image || "",
         image_alt: node.image_alt || node.title || id,
-        primary_media: node.primary_media || "",
+        primary_media: node.primary_media ? (protocolToLocal.get(node.primary_media) || localIdFromProtocolId(node.primary_media) || node.primary_media) : "",
         media_type: node.media_type || "",
-        file: node.file || "",
+        file: node.file || node.asset_path || node.asset || "",
+        asset: node.asset || node.asset_path || "",
+        asset_path: node.asset_path || "",
         alt: node.alt || "",
         caption: node.caption || "",
         creator: node.creator || "",
@@ -1775,7 +1826,20 @@ function writeHugoIndexJson(outputDir, substrate) {
     });
 
   const nodeIds = new Set(nodes.map((node) => node.id));
-  const edges = (substrate.relationships || [])
+
+  // Build trail sequence map for synthesis: local trail ID → ordered member local IDs
+  const trailSequenceMapFallback = new Map();
+  for (const node of protocolNodes) {
+    if (node.type !== "trail") continue;
+    const trailLocalId = protocolToLocal.get(node.id) || node.local_id || localIdFromProtocolId(node.id);
+    const memberProtocolIds = [].concat(node.nodes || node.trail_nodes || []).filter(Boolean);
+    const memberLocalIds = memberProtocolIds
+      .map((m) => protocolToLocal.get(String(m)) || localIdFromProtocolId(String(m)))
+      .filter((id) => id && nodeIds.has(id));
+    if (memberLocalIds.length) trailSequenceMapFallback.set(trailLocalId, memberLocalIds);
+  }
+
+  const rawEdges = (substrate.relationships || [])
     .map((relationship) => ({
       source: protocolToLocal.get(relationship.source) || relationship.source,
       target: protocolToLocal.get(relationship.target) || relationship.target,
@@ -1786,7 +1850,85 @@ function writeHugoIndexJson(outputDir, substrate) {
     }))
     .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 
-  fs.writeFileSync(path.join(outputDir, "index.json"), JSON.stringify({ nodes, edges }, null, 2));
+  // Prune trail→member continues_to edges; synthesize sequential node-to-node edges
+  const prunedEdges = rawEdges.filter((edge) => {
+    if (edge.type !== "continues_to") return true;
+    const memberIds = trailSequenceMapFallback.get(edge.source);
+    if (!memberIds) return true;
+    return !memberIds.includes(edge.target);
+  });
+  const seenEdgeKeys = new Set(prunedEdges.map((e) => `${e.source}::${e.type}::${e.target}`));
+  const syntheticEdges = [];
+  for (const [, memberIds] of trailSequenceMapFallback) {
+    for (let i = 1; i < memberIds.length; i++) {
+      const source = memberIds[i - 1];
+      const target = memberIds[i];
+      const key = `${source}::continues_to::${target}`;
+      if (seenEdgeKeys.has(key)) continue;
+      seenEdgeKeys.add(key);
+      syntheticEdges.push({ source, target, type: "continues_to", weight: 6, visibility: "primary", origin: "trail" });
+    }
+  }
+  const edges = [...prunedEdges, ...syntheticEdges];
+
+  // Post-process: fill primary_media for nodes that declare it via has_primary_media relationship
+  const primaryMediaFallbackMap = new Map();
+  for (const edge of rawEdges) {
+    if (edge.type === "has_primary_media") primaryMediaFallbackMap.set(edge.source, edge.target);
+  }
+  for (const node of nodes) {
+    if (!node.primary_media && primaryMediaFallbackMap.has(node.id)) {
+      node.primary_media = primaryMediaFallbackMap.get(node.id);
+    }
+  }
+
+  const viewerData = {
+    namespace: substrate.namespace || substrate.manifest?.namespace || "",
+    nodes,
+    edges
+  };
+
+  fs.writeFileSync(path.join(outputDir, "index.json"), JSON.stringify(viewerData, null, 2));
+  return viewerData;
+}
+
+function writePreviewViewerJson(outputDir, viewerData) {
+  fs.writeFileSync(path.join(outputDir, "xananode-viewer.json"), JSON.stringify(viewerData, null, 2));
+}
+
+function syncPreviewFallbackStaticAssets(outputDir) {
+  const themeRoot = resolveBundledHugoRoot();
+  const themeStaticRoots = [
+    path.join(themeRoot, "exampleSite", "static"),
+    path.join(themeRoot, "static")
+  ];
+  const sourceStatic = themeStaticRoots.find((candidate) => fs.existsSync(path.join(candidate, "assets", "projection", "node-types"))) || themeStaticRoots.find((candidate) => fs.existsSync(candidate));
+  if (!sourceStatic) return;
+
+  const assetSource = path.join(sourceStatic, "assets");
+  const assetTarget = path.join(outputDir, "assets");
+  if (fs.existsSync(assetSource)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.cpSync(assetSource, assetTarget, { recursive: true, force: true });
+  }
+
+  const schemasSource = path.join(sourceStatic, "schemas");
+  const schemasTarget = path.join(outputDir, "schemas");
+  if (fs.existsSync(schemasSource)) {
+    fs.cpSync(schemasSource, schemasTarget, { recursive: true, force: true });
+  }
+
+  const wellKnownSource = path.join(sourceStatic, ".well-known");
+  const wellKnownTarget = path.join(outputDir, ".well-known");
+  if (fs.existsSync(wellKnownSource)) {
+    fs.cpSync(wellKnownSource, wellKnownTarget, { recursive: true, force: true });
+  }
+
+  const iconSource = path.join(sourceStatic, "xananode-icon.svg");
+  const iconTarget = path.join(outputDir, "xananode-icon.svg");
+  if (fs.existsSync(iconSource) && !fs.existsSync(iconTarget)) {
+    fs.copyFileSync(iconSource, iconTarget);
+  }
 }
 
 function localIdFromProtocolId(value) {
@@ -1931,20 +2073,29 @@ function createWorkspaceHugoProjection(workspaceDir) {
     ""
   ].join("\n"));
 
-  sendToRenderer("preview:log", `Generated Hugo projection workspace at ${projectionRoot}\n`);
+  sendToRenderer("preview:log", `Prepared preview workspace at ${projectionRoot}\n`);
   return projectionRoot;
 }
 
 function syncWorkspaceProjectionFiles(workspaceDir, projectionRoot) {
   const workspaceContent = path.join(workspaceDir, "content");
   const targetContent = path.join(projectionRoot, "content");
+  fs.rmSync(targetContent, { recursive: true, force: true });
   if (fs.existsSync(workspaceContent)) {
     fs.cpSync(workspaceContent, targetContent, { recursive: true, force: true });
     dedupeProjectionMarkdownNodes(targetContent);
   }
   const workspaceAssets = path.join(workspaceDir, "assets");
+  const targetAssets = path.join(projectionRoot, "assets");
+  fs.rmSync(targetAssets, { recursive: true, force: true });
   if (fs.existsSync(workspaceAssets)) {
-    fs.cpSync(workspaceAssets, path.join(projectionRoot, "assets"), { recursive: true, force: true });
+    fs.cpSync(workspaceAssets, targetAssets, { recursive: true, force: true });
+  }
+  const workspaceAttachedAssets = path.join(workspaceDir, "attached_assets");
+  const targetAttachedAssets = path.join(projectionRoot, "static", "attached_assets");
+  fs.rmSync(targetAttachedAssets, { recursive: true, force: true });
+  if (fs.existsSync(workspaceAttachedAssets)) {
+    fs.cpSync(workspaceAttachedAssets, targetAttachedAssets, { recursive: true, force: true });
   }
 }
 

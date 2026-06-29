@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("xananode", {
   workspaceStatus: () => ipcRenderer.invoke("workspace:status"),
   createNode: (payload) => ipcRenderer.invoke("workspace:createNode", payload),
   updateNode: (payload) => ipcRenderer.invoke("workspace:updateNode", payload),
+  createRelationshipNode: (payload) => ipcRenderer.invoke("workspace:createRelationshipNode", payload),
+  collapseRelationshipNode: (payload) => ipcRenderer.invoke("workspace:collapseRelationshipNode", payload),
   planNodeDeletion: (payload) => ipcRenderer.invoke("workspace:planNodeDeletion", payload),
   deleteNode: (payload) => ipcRenderer.invoke("workspace:deleteNode", payload),
   importAssets: () => ipcRenderer.invoke("workspace:importAssets"),

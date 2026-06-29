@@ -237,6 +237,8 @@ pre {
 }
 
 .topbar {
+  position: relative;
+  z-index: 1000;
   height: 52px;
   display: flex;
   align-items: center;
@@ -291,7 +293,57 @@ pre {
   display: flex;
   gap: 0.42rem;
   align-items: center;
-  overflow-x: auto;
+  overflow: visible;
+}
+
+.topbar-menu {
+  position: relative;
+  border: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.topbar-menu summary {
+  min-height: 34px;
+  padding: 0.48rem 0.9rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--xana-text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.92rem;
+}
+
+.topbar-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.topbar-menu[open] summary {
+  background: rgba(85, 214, 190, 0.13);
+  border-color: rgba(85, 214, 190, 0.45);
+  color: var(--xana-accent);
+}
+
+.topbar-menu-panel {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 220px;
+  padding: 0.7rem;
+  border: 1px solid var(--xana-panel-border);
+  border-radius: 0.85rem;
+  background: rgba(8, 12, 18, 0.98);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.topbar-menu-panel select,
+.topbar-menu-panel button {
+  width: 100%;
 }
 
 .notice {
@@ -699,14 +751,16 @@ summary {
 }
 
 .edge-label {
-  fill: #cbd5e1;
+  fill: #e2e8f0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   paint-order: stroke;
   stroke: rgba(5, 7, 10, 0.92);
-  stroke-width: 5px;
-  font-size: 11px;
-  font-weight: 800;
+  stroke-width: 4.5px;
+  font-size: 12px;
+  font-weight: 700;
   text-anchor: middle;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: context-menu;
 }
 
 .graph-travel-layer {
@@ -1036,6 +1090,107 @@ summary {
   line-height: 1.35;
 }
 
+.relationship-picker-panel {
+  width: min(1080px, 100%);
+  max-height: min(90vh, 1040px);
+  overflow: auto;
+}
+
+.relationship-picker-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0.9rem 0;
+  flex-wrap: wrap;
+}
+
+.relationship-picker-toolbar > select,
+.relationship-picker-toolbar > input {
+  flex: 1 1 240px;
+}
+
+.relationship-type-list--compact {
+  max-height: 220px;
+}
+
+.relationship-node-groups {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.relationship-node-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+}
+
+.relationship-node-option {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  text-align: left;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.relationship-node-option strong,
+.relationship-node-option small {
+  display: block;
+}
+
+.relationship-node-option small {
+  color: var(--xana-text-muted);
+}
+
+.relationship-node-option:hover {
+  border-color: var(--xana-accent);
+  background: var(--xana-accent-soft);
+}
+
+.relationship-node-option.selected {
+  border-color: rgba(85, 214, 190, 0.95);
+  background: linear-gradient(135deg, rgba(85, 214, 190, 0.22), rgba(85, 214, 190, 0.08));
+  box-shadow: 0 0 0 1px rgba(85, 214, 190, 0.35), 0 0 0 4px rgba(85, 214, 190, 0.12);
+  transform: translateY(-1px);
+}
+
+.relationship-node-option.selected strong,
+.relationship-node-option.selected small {
+  color: #e8fffb;
+}
+
+.relationship-node-option.selected .node-type-icon {
+  filter: drop-shadow(0 0 8px rgba(85, 214, 190, 0.45));
+}
+
+.relationship-node-option .node-type-icon {
+  flex: 0 0 auto;
+}
+
+.relationship-type-list--compact {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.relationship-form-inline {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.relationship-form-inline .muted {
+  flex: 1 1 240px;
+}
+
+.node-type-icon {
+  display: block;
+}
+
 .setup-backdrop {
   position: fixed;
   inset: 0;
@@ -1224,6 +1379,7 @@ summary {
 
 .panel-actions-primary {
   flex: 0 0 auto;
+  justify-content: flex-end;
 }
 
 .panel-actions-secondary {
@@ -1319,6 +1475,42 @@ summary {
   margin-top: 0;
 }
 
+.property-field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.custom-property-form,
+.custom-property-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.custom-property-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.custom-property-card {
+  padding: 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.8rem;
+  background: rgba(5, 7, 10, 0.5);
+}
+
+.custom-property-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.custom-property-head strong {
+  font-size: 0.84rem;
+  color: var(--xana-text);
+  word-break: break-word;
+}
+
 .mounted-review-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
@@ -1361,6 +1553,42 @@ summary {
 .relationship-form {
   grid-template-columns: minmax(0, 1fr) auto;
   margin-top: 0.5rem;
+}
+
+.graph-node-menu {
+  position: fixed;
+  z-index: 40;
+  width: min(300px, calc(100vw - 2rem));
+  padding: 0.8rem;
+  border: 1px solid var(--xana-accent-border);
+  border-radius: 0.9rem;
+  background: rgba(5, 7, 10, 0.98);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.48);
+  display: grid;
+  gap: 0.7rem;
+}
+
+.graph-node-menu-title {
+  font-size: 0.92rem;
+  font-weight: 900;
+  color: var(--xana-text);
+  line-height: 1.35;
+}
+
+.graph-node-menu-field {
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+  color: var(--xana-text-muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.graph-node-menu-actions {
+  display: grid;
+  gap: 0.4rem;
 }
 
 .relationship-type-list {

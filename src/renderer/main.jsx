@@ -4,23 +4,26 @@ import nodeTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protoco
 import relationshipTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
 import xananodeIconUrl from "../../vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
 import {
-  buildHopNeighborhood,
   buildReadableTravelOverlayMarkup,
+  buildViewerTravelPlan,
+  buildViewerGraphModel,
   createProjectionRegistry,
-  findProjectionRoute,
+  describeViewerGraphDensity,
   fitReadableProjectionViewport,
-  layoutReadableProjection,
   projectionEdgeArrowPoints,
   projectionEdgePath,
   relationshipsFromProjectionNodes,
+  scoreViewerEdge,
+  selectViewerLabeledNodes,
   wrapProjectionText
-} from "../../vendor/xananode-core/src/projection.js";
+} from "../../vendor/xananode-core/src/index.js";
 import buildMetadata from "../generated/build-metadata.json";
 import "./styles/app.css";
 
 const NODE_TYPE_DEFINITIONS = [...nodeTypeRegistry.node_types].sort((a, b) => a.label.localeCompare(b.label));
 const NODE_TYPES = NODE_TYPE_DEFINITIONS.map((definition) => definition.type);
 const NODE_TYPES_BY_TYPE = Object.fromEntries(NODE_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
+const NODE_TYPE_ORDER = new Map(NODE_TYPE_DEFINITIONS.map((definition, index) => [definition.type, index]));
 const NODE_TYPE_ICON_MODULES = import.meta.glob("../../vendor/xananode-core/vendor/xananode-protocol/media/projection/node-types/*.svg", {
   eager: true,
   query: "?url",
@@ -40,6 +43,58 @@ const GRAPH_PROJECTION_REGISTRY = createProjectionRegistry({
   nodeTypes: nodeTypeRegistry.node_types,
   relationshipTypes: relationshipTypeRegistry.relationship_types
 });
+const RESERVED_FRONTMATTER_KEYS = new Set([
+  "id",
+  "protocol_id",
+  "protocolId",
+  "namespace",
+  "title",
+  "type",
+  "summary",
+  "subtype",
+  "subtypes",
+  "facets",
+  "relationships",
+  "nodes",
+  "branches",
+  "trail_nodes",
+  "trail_branches",
+  "draft",
+  "sharing",
+  "importance",
+  "created_by",
+  "created_at",
+  "updated_at",
+  "primary_media",
+  "primary_media_node",
+  "media_type",
+  "mime_type",
+  "asset_path",
+  "asset_role",
+  "url",
+  "file",
+  "source_node_id",
+  "source_pack_id",
+  "source_file",
+  "content_id",
+  "version_id",
+  "signature",
+  "slug",
+  "relativeFile",
+  "relativePath",
+  "path",
+  "filePath",
+  "__file",
+  "fullPath",
+  "readOnly",
+  "mounted",
+  "workspace_copy_status",
+  "imported",
+  "imported_from",
+  "pack_id",
+  "pack_mode",
+  "intake_analysis"
+]);
 
 function App() {
   const [workspace, setWorkspace] = useState(null);
@@ -64,7 +119,8 @@ function App() {
   const [buildSuggestionMode, setBuildSuggestionMode] = useState("review");
   const [projectionLayout, setProjectionLayout] = useState("single");
   const [projectionSplit, setProjectionSplit] = useState(55);
-  const [relationshipLinkMode, setRelationshipLinkMode] = useState(null);
+  const [relationshipPicker, setRelationshipPicker] = useState(null);
+  const [relationshipNewNodePicker, setRelationshipNewNodePicker] = useState(null);
   const [graphCommand, setGraphCommand] = useState(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState(() => loadRecentWorkspaces());
   const api = window.xananode || createUnavailableApi();
@@ -116,7 +172,7 @@ function App() {
         setCenterMode("graph");
       } else if (command === "projection:hugo") {
         setProjectionLayout("single");
-        setCenterMode("preview");
+        setCenterMode("graph");
       } else if (command === "projection:both") {
         setProjectionLayout("split");
         setCenterMode("graph");
@@ -202,7 +258,7 @@ function App() {
     setPreviewLogs((logs) => [...logs.slice(-120), `[${source}] resolved nodeId=${nodeId} -> ${selected.id || selected.protocolId || selected.title}\n`]);
     setSelectedNode(selected);
     setDraft(makeDraft(selected));
-    setCenterMode("preview");
+    setCenterMode("graph");
   }
 
   useEffect(() => {
@@ -439,8 +495,8 @@ function App() {
         sessionId,
         session: sessionEntry?.session || undefined,
         sourceFile: sessionEntry?.sourceFile || undefined,
-        acceptPendingNodes: true,
-        acceptPendingRelationships: true
+        acceptPendingNodes: false,
+        acceptPendingRelationships: false
       }),
       "Added Augment intake to workspace"
     );
@@ -665,19 +721,25 @@ function App() {
   }
 
   async function startPreview() {
-    const result = await run(() => api.startHugoPreview(), "Started Hugo preview");
+    const result = await run(() => api.startHugoPreview(), "Started Hugo background");
     if (result?.url) {
       setPreviewUrl(bustPreviewUrl(result.url));
-      setCenterMode("preview");
+      if (centerMode === "preview") setCenterMode("graph");
     }
   }
 
   async function rebuildPreview() {
-    const result = await run(() => api.rebuildHugoPreview(), "Rebuilt Hugo preview");
+    const result = await run(() => api.rebuildHugoPreview(), "Rebuilt Hugo background");
     if (result?.url) {
       setPreviewUrl(bustPreviewUrl(result.url));
-      setCenterMode("preview");
+      if (centerMode === "preview") setCenterMode("graph");
     }
+  }
+
+  async function stopPreview() {
+    await run(() => api.stopHugoPreview(), "Stopped Hugo background");
+    setPreviewUrl("");
+    if (centerMode === "preview") setCenterMode("graph");
   }
 
   function cloneFrontMatterForNewNode(node) {
@@ -749,8 +811,44 @@ function App() {
     await duplicateNodeFrom(base);
   }
 
+  async function finalizePendingRelationship(savedNode, pendingSourceRef, pendingType) {
+    if (!savedNode || !pendingSourceRef || !pendingType) return null;
+    const sourceNode = findWorkspaceNode(pendingSourceRef, workspace?.nodes || []);
+    if (!sourceNode) {
+      setNotice({ type: "error", text: `Saved the new node, but could not find the relationship source: ${pendingSourceRef}` });
+      return null;
+    }
+    const sourceRelativeFile = resolveNodeFilePath(sourceNode);
+    if (!sourceRelativeFile) {
+      setNotice({ type: "error", text: `Saved the new node, but the relationship source is not editable here: ${sourceNode.title || sourceNode.id}` });
+      return null;
+    }
+    const sourceDraft = makeDraft(sourceNode);
+    const sourceFrontMatter = extractFrontMatterShape(sourceDraft);
+    const relationships = Array.isArray(sourceFrontMatter.relationships) ? [...sourceFrontMatter.relationships] : [];
+    const targetRef = projectionNodeRef(savedNode);
+    const exists = relationships.some((relationship) => relationship?.type === pendingType && normalizeNodeRef(relationship?.target) === normalizeNodeRef(targetRef));
+    if (!exists) {
+      relationships.push({
+        type: pendingType,
+        target: targetRef,
+        summary: ""
+      });
+    }
+    const updatedNodeData = normalizeFrontMatterForSave({
+      ...sourceFrontMatter,
+      relationships
+    });
+    return run(
+      () => api.updateNode({ relativeFile: sourceRelativeFile, nodeData: updatedNodeData, body: sourceDraft.body || "" }),
+      `Linked ${sourceNode.title || sourceNode.id} to ${savedNode.title || savedNode.id}`
+    );
+  }
+
   async function saveNode() {
     if (!draft) return;
+    const pendingRelationshipSource = draft.__pendingRelationshipSource;
+    const pendingRelationshipType = draft.__pendingRelationshipType;
     const relativeFile = draft.relativePath || draft.path || draft.filePath || draft.__file;
     if (!relativeFile) {
       const result = await run(
@@ -766,6 +864,9 @@ function App() {
         setDraft(makeDraft(saved));
       } else if (result?.result?.data) {
         setDraft({ ...draft, relativePath: result.result.filePath, frontMatter: result.result.data });
+      }
+      if (saved && pendingRelationshipSource && pendingRelationshipType) {
+        await finalizePendingRelationship(saved, pendingRelationshipSource, pendingRelationshipType);
       }
       return;
     }
@@ -784,6 +885,9 @@ function App() {
         relativePath: result?.result?.filePath || relativeFile,
         frontMatter: result?.result?.data || nodeData
       });
+    }
+    if (saved && pendingRelationshipSource && pendingRelationshipType) {
+      await finalizePendingRelationship(saved, pendingRelationshipSource, pendingRelationshipType);
     }
   }
 
@@ -821,9 +925,9 @@ function App() {
     setDraft(node?.readOnly ? null : makeDraft(node));
   }
 
-  function newNode() {
-    const title = `Untitled Node ${nodes.length + 1}`;
-    const type = "concept";
+  function createNewDraft(options = {}) {
+    const title = options.title || `Untitled Node ${nodes.length + 1}`;
+    const type = options.type || "concept";
     const next = {
       title,
       type,
@@ -832,9 +936,69 @@ function App() {
       body: `# ${title}\n\n`,
       frontMatter: { title, type, summary: "", relationships: [] }
     };
+    if (options.pendingRelationshipSource) {
+      next.__pendingRelationshipSource = projectionNodeRef(options.pendingRelationshipSource);
+      next.__pendingRelationshipType = options.pendingRelationshipType || "related_to";
+    }
     setSelectedNode(null);
     setDraft(next);
     setCenterMode("graph");
+  }
+
+  async function createRelationshipNodeFromRelationship(sourceNode, relationship) {
+    if (!sourceNode || !relationship) return;
+    const relationshipType = relationship.type || "related_to";
+    const targetNode = findWorkspaceNode(relationship.target || relationship.to || relationship.node || relationship.id, nodes);
+    const title = relationship.title || `${sourceNode.title || sourceNode.id || "Source"} ${relationshipLabel(relationshipType).replace(/\s*\([^)]*\)/g, "")} ${targetNode?.title || relationship.target || "Target"}`;
+    const result = await run(() => api.createRelationshipNode({
+      relationship: {
+        ...relationship,
+        source: projectionNodeRef(sourceNode),
+        target: projectionNodeRef(targetNode) || relationship.target || relationship.to || relationship.node || relationship.id,
+        type: relationshipType
+      },
+      options: {
+        sourceNode,
+        targetNode,
+        title,
+        summary: relationship.summary || `A first-class relationship node for ${relationshipLabel(relationshipType)}.`,
+        evidence: relationship.evidence,
+        confidence: relationship.confidence,
+        review_status: relationship.review_status,
+        evidence_strength: relationship.evidence_strength,
+        asserted_by: relationship.asserted_by,
+        asserted_at: relationship.asserted_at,
+        reviewed_by: relationship.reviewed_by,
+        importance: relationship.importance || 4,
+        subtype: relationship.subtype,
+        relationships: relationship.relationships || []
+      }
+    }), `Created relationship node for ${relationshipLabel(relationshipType)}`);
+    const created = result?.workspace?.nodes ? findWorkspaceNode(result.result?.data?.protocol_id || result.result?.data?.id, result.workspace.nodes) : null;
+    if (created) {
+      setSelectedNode(created);
+      setDraft(created.readOnly ? null : makeDraft(created));
+      setCenterMode("graph");
+    }
+  }
+
+  async function collapseRelationshipNodeToSimple(node) {
+    if (!node) return;
+    const nodeRef = node.relativeFile || node.protocolId || node.protocol_id || node.id;
+    const result = await run(() => api.collapseRelationshipNode({
+      nodeRef,
+      options: { relationship: node }
+    }), `Collapsed ${node.title || node.id || "relationship node"} to a simple relationship`);
+    if (result?.workspace) {
+      const nextSelected = findWorkspaceNode(node.source_node || node.protocolId || node.protocol_id || node.id, result.workspace.nodes || []) || result.workspace.nodes?.[0] || null;
+      setSelectedNode(nextSelected);
+      setDraft(nextSelected?.readOnly ? null : (nextSelected ? makeDraft(nextSelected) : null));
+      setCenterMode("graph");
+    }
+  }
+
+  function newNode() {
+    createNewDraft();
   }
 
   function addRelationship(type, target) {
@@ -845,35 +1009,73 @@ function App() {
     setDraft({ ...draft, frontMatter: { ...frontMatter, relationships } });
   }
 
-  function startRelationshipLink(type) {
-    setRelationshipLinkMode({ type, source: null });
+  function addRelationshipFromPicker(targetRef, type = relationshipPicker?.relationshipType || "related_to") {
+    if (!relationshipPicker || !targetRef) return;
+    addRelationship(type, targetRef);
+    setRelationshipPicker(null);
+    setNotice({ type: "success", text: `Added ${relationshipLabel(type)} to the draft. Save the source node when it looks right.` });
+  }
+
+  function openRelationshipPicker(sourceNode, type = "related_to") {
+    if (!sourceNode) return;
+    if (sourceNode.readOnly) {
+      setNotice({ type: "error", text: "Duplicate mounted nodes into this workspace before authoring new relationships from them." });
+      return;
+    }
+    const sourceDraft = sourceNode?.frontMatter ? sourceNode : makeDraft(sourceNode);
+    setSelectedNode(sourceNode);
+    setDraft(sourceDraft);
+    setRelationshipPicker({
+      sourceNode,
+      relationshipType: type,
+      sourceLabel: sourceNode.title || sourceNode.id || "Selected node"
+    });
     setProjectionLayout("single");
     setCenterMode("graph");
-    setNotice({ type: "success", text: `Choose the source node, then the target node for ${relationshipLabel(type)}.` });
+  }
+
+  function closeRelationshipPicker() {
+    setRelationshipPicker(null);
+  }
+
+  function openRelationshipNewNodePicker(sourceNode, type = "related_to") {
+    if (!sourceNode) return;
+    if (sourceNode.readOnly) {
+      setNotice({ type: "error", text: "Duplicate mounted nodes into this workspace before authoring new relationships from them." });
+      return;
+    }
+    setSelectedNode(sourceNode);
+    setDraft(sourceNode?.frontMatter ? sourceNode : makeDraft(sourceNode));
+    setRelationshipNewNodePicker({
+      sourceNode,
+      relationshipType: type,
+      nodeType: sourceNode.type || "concept",
+      title: ""
+    });
+    setProjectionLayout("single");
+    setCenterMode("graph");
+  }
+
+  function closeRelationshipNewNodePicker() {
+    setRelationshipNewNodePicker(null);
+  }
+
+  function createRelationshipNewNode(payload = {}) {
+    if (!relationshipNewNodePicker?.sourceNode) return;
+    const title = String(payload.title ?? relationshipNewNodePicker.title ?? "").trim() || `Untitled Node ${nodes.length + 1}`;
+    const type = payload.nodeType || relationshipNewNodePicker.nodeType || "concept";
+    const relationshipType = payload.relationshipType || relationshipNewNodePicker.relationshipType || "related_to";
+    createNewDraft({
+      title,
+      type,
+      pendingRelationshipSource: relationshipNewNodePicker.sourceNode,
+      pendingRelationshipType: relationshipType
+    });
+    setRelationshipNewNodePicker(null);
   }
 
   function handleGraphNodeClick(node) {
-    if (!relationshipLinkMode) {
-      selectNode(node);
-      return;
-    }
-    if (!relationshipLinkMode.source) {
-      setRelationshipLinkMode({ ...relationshipLinkMode, source: node });
-      setSelectedNode(node);
-      setDraft(makeDraft(node));
-      setNotice({ type: "success", text: `Source set to ${node.title || node.id}. Now choose the target.` });
-      return;
-    }
-    const source = relationshipLinkMode.source;
-    const targetRef = projectionNodeRef(node);
-    const sourceDraft = makeDraft(source);
-    const frontMatter = sourceDraft.frontMatter || extractFrontMatterShape(sourceDraft);
-    const relationships = Array.isArray(frontMatter.relationships) ? [...frontMatter.relationships] : [];
-    relationships.push({ type: relationshipLinkMode.type, target: targetRef, summary: "" });
-    setSelectedNode(source);
-    setDraft({ ...sourceDraft, frontMatter: { ...frontMatter, relationships } });
-    setRelationshipLinkMode(null);
-    setNotice({ type: "success", text: `Added ${relationshipLabel(relationshipLinkMode.type)} to the draft. Save the source node when it looks right.` });
+    selectNode(node);
   }
 
   return (
@@ -892,14 +1094,20 @@ function App() {
           <button onClick={openWorkspace}>Open</button>
           <button onClick={() => setIntertwingleOpen(true)}>Intertwingle .substrate</button>
           <button disabled={!workspace} onClick={refreshStatus}>Health</button>
-          <select value={buildSuggestionMode} onChange={(event) => setBuildSuggestionMode(event.target.value)} title="Suggestion handling during build">
-            <option value="review">Review suggestions</option>
-            <option value="apply">Apply safe suggestions</option>
-          </select>
-          <button disabled={!workspace} onClick={() => run(() => api.build({ suggestionMode: buildSuggestionMode }), buildSuggestionMode === "apply" ? "Built artifacts and applied safe suggestions" : "Built substrate artifacts")}>Build Artifacts</button>
-          <button disabled={!workspace} onClick={exportSubstrate}>Export .substrate</button>
-          <button disabled={!workspace || !hugoEnabled} onClick={startPreview}>Hugo Projection</button>
-          <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
+          <details className="topbar-menu">
+            <summary>Build</summary>
+            <div className="topbar-menu-panel">
+              <select value={buildSuggestionMode} onChange={(event) => setBuildSuggestionMode(event.target.value)} title="Suggestion handling during build">
+                <option value="review">Review suggestions</option>
+                <option value="apply">Apply safe suggestions</option>
+              </select>
+              <button disabled={!workspace} onClick={() => run(() => api.build({ suggestionMode: buildSuggestionMode }), buildSuggestionMode === "apply" ? "Built substrate and applied safe suggestions" : "Built substrate")}>Build Substrate</button>
+              <button disabled={!workspace} onClick={exportSubstrate}>Export .substrate</button>
+              <button disabled={!workspace || !hugoEnabled} onClick={startPreview}>Start Hugo</button>
+              <button disabled={!workspace} onClick={stopPreview}>Stop Hugo</button>
+              <button disabled={!workspace} onClick={() => setSnapshotOpen(true)}>Save Snapshot</button>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -950,6 +1158,30 @@ function App() {
           onSetStatus={setAugmentCandidateStatus}
           onApplySession={applyAugmentSession}
           onClose={() => setAugmentIntake(null)}
+        />
+      )}
+      {relationshipPicker && (
+        <RelationshipPickerDialog
+          sourceNode={relationshipPicker.sourceNode}
+          sourceLabel={relationshipPicker.sourceLabel}
+          relationshipType={relationshipPicker.relationshipType}
+          nodes={nodes}
+          onClose={closeRelationshipPicker}
+          onChangeRelationshipType={(nextType) => setRelationshipPicker((value) => value ? { ...value, relationshipType: nextType } : value)}
+          onPickTarget={(targetRef, type) => addRelationshipFromPicker(targetRef, type)}
+        />
+      )}
+      {relationshipNewNodePicker && (
+        <RelationshipNewNodeDialog
+          sourceNode={relationshipNewNodePicker.sourceNode}
+          relationshipType={relationshipNewNodePicker.relationshipType}
+          title={relationshipNewNodePicker.title}
+          nodeType={relationshipNewNodePicker.nodeType}
+          onChangeTitle={(value) => setRelationshipNewNodePicker((current) => current ? { ...current, title: value } : current)}
+          onChangeNodeType={(value) => setRelationshipNewNodePicker((current) => current ? { ...current, nodeType: value } : current)}
+          onChangeRelationshipType={(value) => setRelationshipNewNodePicker((current) => current ? { ...current, relationshipType: value } : current)}
+          onClose={closeRelationshipNewNodePicker}
+          onCreate={createRelationshipNewNode}
         />
       )}
 
@@ -1022,7 +1254,10 @@ function App() {
                         className={`catalog-item ${selectedNode && nodeKey(selectedNode) === nodeKey(node) ? "selected" : ""}`}
                         onClick={() => selectNode(node)}
                       >
-                        <span>{node.title || node.id || "Untitled"}</span>
+                          <span className="catalog-item-head">
+                            <NodeTypeIcon type={node.type} size={24} />
+                            <span>{node.title || node.id || "Untitled"}</span>
+                          </span>
                         <small>{node.type || "node"}</small>
                       </button>
                     ))}
@@ -1039,18 +1274,15 @@ function App() {
               setProjectionLayout={setProjectionLayout}
               projectionSplit={projectionSplit}
               setProjectionSplit={setProjectionSplit}
-              relationshipLinkMode={relationshipLinkMode}
-              onCancelLink={() => setRelationshipLinkMode(null)}
             />
             {projectionLayout === "split" && centerMode !== "health" && centerMode !== "logs" ? (
               <div className="projection-split" style={{ gridTemplateColumns: `${projectionSplit}% minmax(280px, 1fr)` }}>
-                <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />
-                <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} compact />
+                <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} onQuickRelationshipToExisting={openRelationshipPicker} onQuickRelationshipToNew={openRelationshipNewNodePicker} onPromoteRelationshipEdge={createRelationshipNodeFromRelationship} onCollapseRelationshipNode={collapseRelationshipNodeToSimple} command={graphCommand} />
+                <LogView logs={previewLogs} compact />
               </div>
             ) : (
               <>
-                {centerMode === "graph" && <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} linkMode={relationshipLinkMode} command={graphCommand} />}
-                {centerMode === "preview" && <PreviewView previewUrl={previewUrl} startPreview={startPreview} rebuildPreview={rebuildPreview} stopPreview={stopPreview} logs={previewLogs} />}
+                {centerMode === "graph" && <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} onQuickRelationshipToExisting={openRelationshipPicker} onQuickRelationshipToNew={openRelationshipNewNodePicker} onPromoteRelationshipEdge={createRelationshipNodeFromRelationship} onCollapseRelationshipNode={collapseRelationshipNodeToSimple} command={graphCommand} />}
               </>
             )}
                 {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} onOpenNode={openMountedNode} onDuplicateNode={duplicateMountedNode} />}
@@ -1065,7 +1297,10 @@ function App() {
               nodes={nodes}
               suggestions={suggestions}
               addRelationship={addRelationship}
-              startRelationshipLink={startRelationshipLink}
+              openRelationshipPicker={openRelationshipPicker}
+              openRelationshipNewNodePicker={openRelationshipNewNodePicker}
+              createRelationshipNodeFromRelationship={createRelationshipNodeFromRelationship}
+              collapseRelationshipNodeToSimple={collapseRelationshipNodeToSimple}
               duplicateNode={duplicateNode}
               saveNode={saveNode}
               deleteNode={deleteCurrentNode}
@@ -1256,6 +1491,307 @@ function IntertwingleDialog({ targets, loading, busy, progress, onLocalFile, onL
   );
 }
 
+function RelationshipPickerDialog({ sourceNode, sourceLabel, relationshipType, nodes, onClose, onChangeRelationshipType, onPickTarget }) {
+  const [relationshipCategory, setRelationshipCategory] = useState("all");
+  const [relationshipQuery, setRelationshipQuery] = useState("");
+  const [nodeQuery, setNodeQuery] = useState("");
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const sourceRef = projectionNodeRef(sourceNode);
+  const filteredRelationshipDefinitions = (relationshipCategory === "all"
+    ? RELATIONSHIP_TYPE_DEFINITIONS
+    : RELATIONSHIP_TYPE_DEFINITIONS.filter((definition) => definition.category === relationshipCategory)
+  ).filter((definition) => {
+    const query = relationshipQuery.trim().toLowerCase();
+    if (!query) return true;
+    return [definition.label, definition.type, definition.category, definition.meaning, definition.inverse]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+  const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
+  const groupedNodes = useMemo(() => groupNodes(
+    sortNodesForPicker(nodes).filter((node) => projectionNodeRef(node) !== sourceRef),
+    "type"
+  ), [nodes, sourceRef]);
+  const filteredNodeGroups = useMemo(() => {
+    const query = nodeQuery.trim().toLowerCase();
+    if (!query) return groupedNodes;
+    return Object.fromEntries(Object.entries(groupedNodes).map(([group, groupNodes]) => [
+      group,
+      groupNodes.filter((node) => {
+        const haystack = [node.title, node.id, node.type, node.subtype, node.summary]
+          .filter(Boolean)
+          .map((value) => String(value).toLowerCase());
+        return haystack.some((value) => value.includes(query));
+      })
+    ]).filter(([, groupNodes]) => groupNodes.length));
+  }, [groupedNodes, nodeQuery]);
+
+  return (
+    <div className="setup-backdrop">
+      <div className="setup-panel chooser-panel relationship-picker-panel">
+        <div className="setup-header">
+          <div>
+            <div className="kicker">Relationship</div>
+            <h2>Choose a relationship and a target</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <p className="setup-note">Source: <strong>{sourceLabel || sourceNode?.title || sourceNode?.id || "Selected node"}</strong></p>
+        <div className="relationship-picker-toolbar">
+          <select value={relationshipCategory} onChange={(event) => setRelationshipCategory(event.target.value)}>
+            <option value="all">All categories</option>
+            {RELATIONSHIP_CATEGORIES.map((category) => <option value={category} key={category}>{category}</option>)}
+          </select>
+          <input value={relationshipQuery} onChange={(event) => setRelationshipQuery(event.target.value)} placeholder="Search relationship types" />
+        </div>
+        <div className="relationship-type-list relationship-type-list--compact">
+          {filteredRelationshipDefinitions.map((definition) => (
+            <button
+              type="button"
+              className={`relationship-type-option ${relationshipType === definition.type ? "selected" : ""}`}
+              key={definition.type}
+              onClick={() => onChangeRelationshipType?.(definition.type)}
+              title={definition.meaning}
+            >
+              <span>{definition.label}</span>
+              <small>{definition.type}</small>
+            </button>
+          ))}
+        </div>
+        {selectedRelationshipDefinition && (
+          <div className="relationship-definition">
+            <span className="pill">{selectedRelationshipDefinition.category}</span>
+            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
+            <p>{selectedRelationshipDefinition.meaning}</p>
+          </div>
+        )}
+        <div className="relationship-picker-toolbar">
+          <input value={nodeQuery} onChange={(event) => setNodeQuery(event.target.value)} placeholder="Search nodes by title or type" />
+        </div>
+        <div className="relationship-node-groups">
+          {Object.entries(filteredNodeGroups).length ? Object.entries(filteredNodeGroups).map(([group, groupNodes]) => (
+            <details key={group} open>
+              <summary>{group} <span>{groupNodes.length}</span></summary>
+              <div className="relationship-node-list">
+                {groupNodes.map((node) => (
+                  <button
+                    type="button"
+                    key={nodeKey(node)}
+                    className={`relationship-node-option ${selectedTarget === projectionNodeRef(node) ? "selected" : ""}`}
+                    onClick={() => setSelectedTarget(projectionNodeRef(node))}
+                    title={node.title || node.id || node.type || "Untitled"}
+                  >
+                    <NodeTypeIcon type={node.type} size={28} />
+                    <span>
+                      <strong>{node.title || node.id || "Untitled"}</strong>
+                      <small>{node.type || "node"}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )) : <p className="muted">No nodes match the current search.</p>}
+        </div>
+        <div className="setup-actions">
+          <button type="button" className="primary" disabled={!selectedTarget} onClick={() => onPickTarget?.(selectedTarget, relationshipType)}>Apply</button>
+          <button type="button" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RelationshipNewNodeDialog({ sourceNode, relationshipType, nodeType, title, onClose, onChangeTitle, onChangeNodeType, onChangeRelationshipType, onCreate }) {
+  const [relationshipCategory, setRelationshipCategory] = useState(RELATIONSHIP_TYPES_BY_TYPE[relationshipType]?.category || "all");
+  const [relationshipQuery, setRelationshipQuery] = useState("");
+  const [localRelationshipType, setLocalRelationshipType] = useState(relationshipType || "related_to");
+  const [localNodeType, setLocalNodeType] = useState(nodeType || "concept");
+  const [localTitle, setLocalTitle] = useState(title || "");
+  const suggestedTypes = NODE_TYPE_DEFINITIONS.filter((definition) => definition.type !== "relationship");
+  const filteredRelationshipDefinitions = (relationshipCategory === "all"
+    ? RELATIONSHIP_TYPE_DEFINITIONS
+    : RELATIONSHIP_TYPE_DEFINITIONS.filter((definition) => definition.category === relationshipCategory)
+  ).filter((definition) => {
+    const query = relationshipQuery.trim().toLowerCase();
+    if (!query) return true;
+    return [definition.label, definition.type, definition.category, definition.meaning, definition.inverse]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+  const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
+
+  useEffect(() => {
+    setRelationshipCategory(RELATIONSHIP_TYPES_BY_TYPE[relationshipType]?.category || "all");
+    setRelationshipQuery("");
+    setLocalRelationshipType(relationshipType || "related_to");
+  }, [relationshipType]);
+
+  useEffect(() => {
+    setLocalNodeType(nodeType || "concept");
+  }, [nodeType]);
+
+  useEffect(() => {
+    setLocalTitle(title || "");
+  }, [title]);
+
+  return (
+    <div className="setup-backdrop">
+      <div className="setup-panel chooser-panel relationship-picker-panel">
+        <div className="setup-header">
+          <div>
+            <div className="kicker">New node</div>
+            <h2>Create a related node</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+        </div>
+        <p className="setup-note">
+          Source: <strong>{sourceNode?.title || sourceNode?.id || "Selected node"}</strong>. Studio will create the new node and then attach {relationshipLabel(relationshipType)}.
+        </p>
+        <div className="relationship-picker-toolbar">
+          <select value={relationshipCategory} onChange={(event) => setRelationshipCategory(event.target.value)}>
+            <option value="all">All categories</option>
+            {RELATIONSHIP_CATEGORIES.map((category) => <option value={category} key={category}>{category}</option>)}
+          </select>
+          <input value={relationshipQuery} onChange={(event) => setRelationshipQuery(event.target.value)} placeholder="Search relationship types" />
+        </div>
+        <div className="relationship-type-list relationship-type-list--compact">
+          {filteredRelationshipDefinitions.map((definition) => (
+            <button
+              type="button"
+              className={`relationship-type-option ${localRelationshipType === definition.type ? "selected" : ""}`}
+              key={definition.type}
+              onClick={() => {
+                setLocalRelationshipType(definition.type);
+                onChangeRelationshipType?.(definition.type);
+              }}
+              title={definition.meaning}
+            >
+              <span>{definition.label}</span>
+              <small>{definition.type}</small>
+            </button>
+          ))}
+        </div>
+        {selectedRelationshipDefinition && (
+          <div className="relationship-definition">
+            <span className="pill">{selectedRelationshipDefinition.category}</span>
+            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
+            <p>{selectedRelationshipDefinition.meaning}</p>
+          </div>
+        )}
+        <div className="relationship-picker-toolbar">
+          <input
+            value={localTitle}
+            onChange={(event) => {
+              setLocalTitle(event.target.value);
+              onChangeTitle?.(event.target.value);
+            }}
+            placeholder="New node title"
+            autoFocus
+          />
+          <select
+            value={localNodeType}
+            onChange={(event) => {
+              setLocalNodeType(event.target.value);
+              onChangeNodeType?.(event.target.value);
+            }}
+          >
+            {suggestedTypes.map((definition) => (
+              <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
+            ))}
+          </select>
+        </div>
+        <div className="relationship-definition">
+          <span className="pill">{localNodeType || "node"}</span>
+          <span>Relationship: {relationshipLabel(localRelationshipType)}</span>
+          <p>The new node will open in the editor after creation so you can finish the content immediately.</p>
+        </div>
+        <div className="setup-actions">
+          <button type="button" className="primary" onClick={() => onCreate?.({ title: localTitle, nodeType: localNodeType, relationshipType: localRelationshipType, sourceNode })}>Create and relate</button>
+          <button type="button" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NodeTypeIcon({ type, size = 28, variant = "badge" }) {
+  const kind = String(type || "node");
+  const colors = NODE_TYPES_BY_TYPE[kind]?.color || {};
+  const fill = colors.bg || "#5b6472";
+  const outline = colors.outline || "rgba(255, 255, 255, 0.5)";
+  const accent = colors.fg || "#f8fafc";
+  return (
+    <svg
+      className={`node-type-icon ${variant === "glyph" ? "node-type-icon--glyph" : "node-type-icon--badge"}`}
+      viewBox="0 0 64 64"
+      width={size}
+      height={size}
+      x={variant === "glyph" ? -size / 2 : 0}
+      y={variant === "glyph" ? -size / 2 : 0}
+      aria-hidden="true"
+      focusable="false"
+    >
+      {variant === "badge" && <circle cx="32" cy="32" r="27" fill={fill} stroke={outline} strokeWidth="4" />}
+      {kind === "person" && (
+        <>
+          <circle cx="32" cy="22" r="8" fill={accent} opacity="0.95" />
+          <path d="M18 48c2-9 9-14 14-14s12 5 14 14" fill="none" stroke={accent} strokeWidth="5" strokeLinecap="round" />
+        </>
+      )}
+      {kind === "organization" && (
+        <>
+          <path d="M20 18h24v30H20z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M24 24h4M32 24h4M40 24h4M24 30h4M32 30h4M40 30h4M24 36h4M32 36h4M40 36h4" stroke={accent} strokeWidth="4" strokeLinecap="round" />
+          <path d="M28 48V38h8v10" fill="none" stroke={accent} strokeWidth="4" strokeLinecap="round" />
+        </>
+      )}
+      {kind === "place" && (
+        <>
+          <path d="M32 14c-8 0-14 6-14 14 0 10 14 22 14 22s14-12 14-22c0-8-6-14-14-14z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <circle cx="32" cy="28" r="5" fill={accent} />
+        </>
+      )}
+      {kind === "concept" && (
+        <>
+          <path d="M24 37c0-5 4-9 8-9s8 4 8 9c0 3-1 5-3 7v4H27v-4c-2-2-3-4-3-7z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M28 50h8" stroke={accent} strokeWidth="4" strokeLinecap="round" />
+        </>
+      )}
+      {kind === "source" || kind === "publication" || kind === "essay" || kind === "fragment" || kind === "revision" || kind === "schema" || kind === "item" ? (
+        <>
+          <path d="M22 14h16l10 10v26H22z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M38 14v10h10" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M28 28h12M28 34h12M28 40h8" stroke={accent} strokeWidth="4" strokeLinecap="round" />
+        </>
+      ) : null}
+      {kind === "question" && (
+        <>
+          <path d="M24 24c0-5 4-8 8-8 5 0 8 3 8 7 0 4-3 6-6 8-2 1-3 2-3 5" fill="none" stroke={accent} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="32" cy="45" r="3" fill={accent} />
+        </>
+      )}
+      {(kind === "claim" || kind === "response" || kind === "community" || kind === "media" || kind === "project" || kind === "trail" || kind === "technology" || kind === "knowledge_gap" || kind === "observation" || kind === "problem") && (
+        <>
+          <path d="M18 20h28v18H36l-8 8v-8H18z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          {kind === "problem" && <path d="M32 24v8M32 38h0" stroke={accent} strokeWidth="4" strokeLinecap="round" />}
+          {kind === "observation" && <circle cx="32" cy="29" r="6" fill="none" stroke={accent} strokeWidth="4" />}
+          {kind === "technology" && <path d="M28 24h8l2 4-2 4h-8l-2-4z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />}
+          {kind === "trail" && <path d="M22 38c6-8 14-8 20 0" fill="none" stroke={accent} strokeWidth="4" strokeLinecap="round" />}
+          {kind === "knowledge_gap" && <path d="M26 31h12M32 24v14" stroke={accent} strokeWidth="4" strokeLinecap="round" />}
+        </>
+      )}
+      {!(kind === "person" || kind === "organization" || kind === "place" || kind === "concept" || kind === "source" || kind === "publication" || kind === "essay" || kind === "fragment" || kind === "revision" || kind === "schema" || kind === "item" || kind === "question" || kind === "claim" || kind === "response" || kind === "community" || kind === "media" || kind === "project" || kind === "trail" || kind === "technology" || kind === "knowledge_gap" || kind === "observation" || kind === "problem") && (
+        <>
+          <circle cx="24" cy="24" r="4" fill={accent} />
+          <circle cx="40" cy="24" r="4" fill={accent} />
+          <circle cx="32" cy="40" r="4" fill={accent} />
+          <path d="M24 24L32 40L40 24" fill="none" stroke={accent} strokeWidth="3.5" strokeLinejoin="round" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function AugmentSourceChooser({ onImportFiles, onSubmitUrl, onSubmitWikipedia, onSubmitGithub, onSubmitText, onClose }) {
   const [mode, setMode] = useState("files");
   const [busy, setBusy] = useState(false);
@@ -1390,7 +1926,7 @@ function AugmentIntakeDialog({ intake, onSetStatus, onApplySession, onClose }) {
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
         </div>
-        <p className="setup-note">Text files and PDFs come through Augment first. Accept what belongs in this substrate, reject what does not, then add the accepted results into your current workspace.</p>
+        <p className="setup-note">Text files and PDFs come through Augment first. Accept what belongs in this substrate, then add only the accepted results into your current workspace. Everything else stays out.</p>
         <div className="intake-session-list">
           {intake.sessions.map((entry) => {
             const sessionId = entry.session?.id;
@@ -1415,7 +1951,7 @@ function AugmentIntakeDialog({ intake, onSetStatus, onApplySession, onClose }) {
                 </div>
                 <div className="intake-candidate-list">
                   {entry.candidates.map((candidate) => (
-                    <article className={`intake-candidate ${candidate.status || "pending"}`} key={candidate.id}>
+                    <article className={`intake-candidate ${candidate.status === "accepted" ? "accepted" : "rejected"}`} key={candidate.id}>
                       <div className="panel-row">
                         <div>
                           <strong>{candidate.title || "Untitled candidate"}</strong>
@@ -1426,9 +1962,7 @@ function AugmentIntakeDialog({ intake, onSetStatus, onApplySession, onClose }) {
                           </div>
                         </div>
                         <div className="candidate-actions">
-                          <button type="button" className={candidate.status === "accepted" ? "primary" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "accepted")}>Accept</button>
-                          <button type="button" className={candidate.status === "pending" ? "active-chip" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "pending")}>Pending</button>
-                          <button type="button" className={candidate.status === "rejected" ? "danger" : ""} onClick={() => onSetStatus(sessionId, candidate.id, "rejected")}>Reject</button>
+                          <button type="button" className={candidate.status === "accepted" ? "primary" : ""} onClick={() => onSetStatus(sessionId, candidate.id, candidate.status === "accepted" ? null : "accepted")}>Accept</button>
                         </div>
                       </div>
                       {candidate.summary ? <p>{candidate.summary}</p> : null}
@@ -1451,9 +1985,7 @@ function ProjectionToolbar({
   projectionLayout,
   setProjectionLayout,
   projectionSplit,
-  setProjectionSplit,
-  relationshipLinkMode,
-  onCancelLink
+  setProjectionSplit
 }) {
   return (
     <div className="center-tabs projection-toolbar">
@@ -1462,10 +1994,6 @@ function ProjectionToolbar({
           setProjectionLayout("single");
           setCenterMode("graph");
         }}>Graph Projection</button>
-        <button className={centerMode === "preview" && projectionLayout !== "split" ? "active" : ""} onClick={() => {
-          setProjectionLayout("single");
-          setCenterMode("preview");
-        }}>Hugo Projection</button>
         <button className={projectionLayout === "split" ? "active" : ""} onClick={() => {
           setProjectionLayout("split");
           setCenterMode("graph");
@@ -1485,24 +2013,19 @@ function ProjectionToolbar({
           <input type="range" min="35" max="75" value={projectionSplit} onChange={(event) => setProjectionSplit(Number(event.target.value))} />
         </label>
       )}
-      {relationshipLinkMode && (
-        <div className="link-mode-banner">
-          <span>{relationshipLinkMode.source ? "Choose target" : "Choose source"} for {relationshipLabel(relationshipLinkMode.type)}</span>
-          <button onClick={onCancelLink}>Cancel</button>
-        </div>
-      )}
     </div>
   );
 }
 
-function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMode, command }) {
+function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuickRelationshipToExisting, onQuickRelationshipToNew, onPromoteRelationshipEdge, onCollapseRelationshipNode, command }) {
   const current = draft || selectedNode || nodes[0] || null;
   const [graphDepth, setGraphDepth] = useState(1);
+  const [contextMenu, setContextMenu] = useState(null);
   const graphNodes = useMemo(() => buildEffectiveGraphNodes(nodes, draft, selectedNode), [nodes, draft, selectedNode]);
   const graph = useMemo(() => buildLocalGraph(graphNodes, current, graphDepth), [graphNodes, current, graphDepth]);
-  const graphDensity = useMemo(() => describeGraphDensity(graph), [graph]);
+  const graphDensity = useMemo(() => describeViewerGraphDensity(graph), [graph]);
   const denseGraph = graphDensity.mode === "dense";
-  const labeledNodeIds = useMemo(() => selectVisibleGraphLabels(graph, { dense: denseGraph }), [graph, denseGraph]);
+  const labeledNodeIds = useMemo(() => selectViewerLabeledNodes(graph, { dense: denseGraph }), [graph, denseGraph]);
   const graphKey = useMemo(() => graph.nodes.map((node) => node.id || node.key).join("|"), [graph.nodes]);
   const [viewport, setViewport] = useState(() => fitGraphViewport(graph.nodes));
   const [travelMarkup, setTravelMarkup] = useState("");
@@ -1526,15 +2049,15 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
       previousGraphRef.current = { currentId, graph, viewport };
       return;
     }
-    const fromNode = previous.graph?.nodes?.find((node) => node.id === previous.currentId);
-    const toNode = previous.graph?.nodes?.find((node) => node.id === currentId);
-    const route = findProjectionRoute(previous.graph?.edges || [], previous.currentId, currentId, { maxDepth: 6 });
-    const routeNodes = route?.nodeIds
-      ?.map((id) => previous.graph?.nodes?.find((node) => node.id === id))
-      .filter(Boolean);
-    if (fromNode && toNode) {
-      setTravelMarkup(buildReadableTravelOverlayMarkup(fromNode, toNode, previous.viewport || viewport, { routeNodes }));
-      const timer = window.setTimeout(() => setTravelMarkup(""), Math.max(820, Number(routeNodes?.length || 2) * 260));
+    const travelPlan = buildViewerTravelPlan(previous.graph, previous.currentId, currentId, { maxDepth: 6 });
+    if (travelPlan?.currentNode && travelPlan?.nextNode) {
+      setTravelMarkup(buildReadableTravelOverlayMarkup(
+        travelPlan.currentNode,
+        travelPlan.nextNode,
+        previous.viewport || viewport,
+        { routeNodes: travelPlan.routeNodes || [] }
+      ));
+      const timer = window.setTimeout(() => setTravelMarkup(""), Math.max(820, Number(travelPlan.routeNodes?.length || 2) * 260));
       previousGraphRef.current = { currentId, graph, viewport };
       return () => window.clearTimeout(timer);
     }
@@ -1584,6 +2107,36 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
     setPanning(false);
   }
 
+  function openNodeContextMenu(event, node) {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      kind: "node",
+      x: event.clientX,
+      y: event.clientY,
+      node: node.source || node,
+      relationshipType: "related_to"
+    });
+  }
+
+  function openEdgeContextMenu(event, edge) {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      kind: "edge",
+      x: event.clientX,
+      y: event.clientY,
+      edge,
+      sourceNode: edge.source?.source || edge.source,
+      targetNode: edge.target?.source || edge.target,
+      relationshipType: edge.type || "related_to"
+    });
+  }
+
+  function closeNodeContextMenu() {
+    setContextMenu(null);
+  }
+
   if (!graphNodes.length) {
     return (
       <div className="empty-panel">
@@ -1594,7 +2147,7 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
   }
 
   return (
-    <div className={`graph-wrap ${linkMode ? "linking" : ""} ${panning ? "panning" : ""}`}>
+    <div className={`graph-wrap ${panning ? "panning" : ""}`}>
       <div className="graph-tools" aria-label="Graph projection controls">
         <button type="button" onClick={() => setViewport(fitGraphViewport(graph.nodes))}>Fit</button>
         <button type="button" aria-label="Zoom out" onClick={() => setViewport((value) => scaleGraphViewport(value, 0.84))}>-</button>
@@ -1619,9 +2172,86 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
         <button type="button" aria-label="Pan right" onClick={() => panBy(-58, 0)}>{">"}</button>
         <button type="button" aria-label="Pan down" onClick={() => panBy(0, -58)}>v</button>
       </div>
-      {linkMode && (
-        <div className="graph-instruction">
-          {linkMode.source ? `Target for ${linkMode.source.title || linkMode.source.id}` : "Click the source node for this relationship."}
+      {contextMenu && (
+        <div
+          className="graph-node-menu"
+          style={{ left: Math.min(contextMenu.x, window.innerWidth - 320), top: Math.min(contextMenu.y, window.innerHeight - 220) }}
+        >
+          <div className="graph-node-menu-title">
+            {contextMenu.kind === "edge"
+              ? `${contextMenu.sourceNode?.title || contextMenu.sourceNode?.id || "Source"} → ${contextMenu.targetNode?.title || contextMenu.targetNode?.id || "Target"}`
+              : contextMenu.node?.title || contextMenu.node?.id || "Selected node"}
+          </div>
+          {contextMenu.kind === "node" && (
+            <label className="graph-node-menu-field">
+              <span>Relationship</span>
+              <select
+                value={contextMenu.relationshipType}
+                onChange={(event) => setContextMenu((value) => value ? { ...value, relationshipType: event.target.value } : value)}
+              >
+                {RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => (
+                  <option value={definition.type} key={`graph-menu-${definition.type}`}>{definition.label} ({definition.type})</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <div className="graph-node-menu-actions">
+            {contextMenu.kind === "edge" ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onPromoteRelationshipEdge?.(contextMenu.sourceNode, {
+                    type: contextMenu.relationshipType,
+                    target: projectionNodeRef(contextMenu.targetNode)
+                  });
+                  closeNodeContextMenu();
+                }}
+              >
+                Make relationship node
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onQuickRelationshipToExisting?.(contextMenu.node, contextMenu.relationshipType);
+                    closeNodeContextMenu();
+                  }}
+                >
+                  Relationship to existing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onQuickRelationshipToNew?.(contextMenu.node, contextMenu.relationshipType);
+                    closeNodeContextMenu();
+                  }}
+                >
+                  Relationship to new
+                </button>
+                {contextMenu.node?.type === "relationship" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCollapseRelationshipNode?.(contextMenu.node);
+                      closeNodeContextMenu();
+                    }}
+                  >
+                    Collapse to simple relationship
+                  </button>
+                )}
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                onSelect?.(contextMenu.node || contextMenu.sourceNode || contextMenu.edge?.source?.source || contextMenu.edge?.source);
+                closeNodeContextMenu();
+              }}
+            >
+              Edit this node
+            </button>
+          </div>
         </div>
       )}
       <svg
@@ -1634,6 +2264,13 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
         onPointerMove={handlePointerMove}
         onPointerUp={endPan}
         onPointerCancel={endPan}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          if (contextMenu) closeNodeContextMenu();
+        }}
+        onClick={() => {
+          if (contextMenu) closeNodeContextMenu();
+        }}
       >
         <defs>
           {graph.nodes.map((node) => {
@@ -1653,25 +2290,44 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
           {graph.edges.map((edge) => {
             const targetInset = Math.max(22, Number(edge.target?.r || 24) + 8);
             const sourceInset = Math.max(12, Number(edge.source?.r || 24) + 3);
+            const edgePath = projectionEdgePath(edge, { sourceInset, targetInset });
+            const safeKey = `ep-${String(edge.key).replace(/[^a-zA-Z0-9]/g, "_")}`;
+            const pm = edgePath.match(/M\s*([\d.-]+)\s+([\d.-]+)\s+Q\s*([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)/);
+            const [psx, psy, pcx, pcy, ptx, pty] = pm ? pm.slice(1).map(Number) : [];
+            const goesLeft = pm && ptx < psx;
+            const textD = pm ? (goesLeft ? `M ${ptx} ${pty} Q ${pcx} ${pcy} ${psx} ${psy}` : edgePath) : edgePath;
+            const startOffset = goesLeft ? "25%" : "75%";
             return (
             <g key={edge.key} opacity={edge.opacity ?? 1}>
               <path
                 className="edge"
-                d={projectionEdgePath(edge, { sourceInset, targetInset })}
+                d={edgePath}
                 stroke={edge.style.color}
                 strokeDasharray={edge.style.dash}
                 strokeWidth={edge.style.strokeWidth}
+                onContextMenu={(event) => openEdgeContextMenu(event, edge)}
               />
               <polygon
                 className="edge-arrow"
                 points={projectionEdgeArrowPoints(edge, 10, targetInset).map(([x, y]) => `${x},${y}`).join(" ")}
                 fill={edge.style.color}
                 opacity={edge.arrowOpacity ?? edge.opacity ?? 1}
+                onContextMenu={(event) => openEdgeContextMenu(event, edge)}
               />
-              {edge.showLabel !== false && !denseGraph && (
-                <text className="edge-label" x={(edge.source.x + edge.target.x) / 2} y={(edge.source.y + edge.target.y) / 2 - 6}>
-                  {edge.label || humanizeRelationship(edge.type)}
-                </text>
+              {edge.showLabel !== false && !denseGraph && pm && (
+                <>
+                  <defs>
+                    <path id={safeKey} d={textD} />
+                  </defs>
+                  <text
+                    className="edge-label"
+                    onContextMenu={(event) => openEdgeContextMenu(event, edge)}
+                  >
+                    <textPath href={`#${safeKey}`} startOffset={startOffset} dy="-5">
+                      {edge.label || humanizeRelationship(edge.type)}
+                    </textPath>
+                  </text>
+                </>
               )}
             </g>
           );})}
@@ -1688,8 +2344,6 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
             const typeWidth = Math.max(54, Math.min(132, typeLabel.length * 6.2 + 18));
             const labelY = -radius - labelHeight - 8;
             const typeY = radius + 4;
-            const iconLabel = node.style?.projection?.iconLabel || String(node.type || "node").slice(0, 2).toUpperCase();
-            const iconAssetSrc = NODE_TYPE_ICON_URLS[node.type || ""];
             const imageRadius = Math.max(8, radius - 7);
             const clipId = `studio-node-clip-${String(node.id || node.key || "node").replace(/[^A-Za-z0-9_-]+/g, "-")}`;
             const nodeId = node.id || node.key;
@@ -1704,6 +2358,7 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
               style={{ "--graph-depth-opacity": node.opacity ?? 1 }}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => onSelect(node.source || node)}
+              onContextMenu={(event) => openNodeContextMenu(event, node)}
             >
               <title>{node.title || node.id || "Untitled"}</title>
               <circle
@@ -1719,10 +2374,8 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, linkMo
                   </clipPath>
                   <image className="graph-node-media" href={mediaSrc} x={-imageRadius} y={-imageRadius} width={imageRadius * 2} height={imageRadius * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clipId})`} />
                 </>
-              ) : iconAssetSrc ? (
-                <image className="graph-node-type-media" href={iconAssetSrc} x={-imageRadius} y={-imageRadius} width={imageRadius * 2} height={imageRadius * 2} preserveAspectRatio="xMidYMid meet" />
               ) : (
-                <text className="graph-node-icon" textAnchor="middle" y="8" fill={node.style?.text || "#06131a"}>{iconLabel}</text>
+                <NodeTypeIcon type={node.type} size={imageRadius * 2} variant="glyph" />
               )}
               {renderLabel && (
                 <g className="graph-node-title-chip graph-node-title-chip--top" opacity={node.labelOpacity ?? 1}>
@@ -1973,11 +2626,43 @@ function EditorFold({ title, helpTitle, help, href, defaultOpen = false, childre
   );
 }
 
-function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRelationship, startRelationshipLink, duplicateNode, saveNode, deleteNode }) {
-  const [relationshipType, setRelationshipType] = useState("related_to");
-  const [relationshipCategory, setRelationshipCategory] = useState("all");
+function parseLoosePropertyValue(value = "") {
+  const text = String(value).trim();
+  if (!text) return "";
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (text === "null") return null;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  if ((text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"))) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function formatPropertyValue(value) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value, null, 2);
+  if (value === undefined || value === null) return "";
+  return String(value);
+}
+
+function fieldOptionList(field = {}) {
+  const options = Array.isArray(field.options) ? field.options : [];
+  return options.map((option) => (
+    typeof option === "string"
+      ? { value: option, label: option }
+      : { value: option?.value ?? "", label: option?.label ?? option?.value ?? "" }
+  )).filter((option) => option.value || option.label);
+}
+
+function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRelationship, openRelationshipPicker, openRelationshipNewNodePicker, createRelationshipNodeFromRelationship, collapseRelationshipNodeToSimple, duplicateNode, saveNode, deleteNode }) {
   const [relationshipTarget, setRelationshipTarget] = useState("");
-  const [relationshipQuery, setRelationshipQuery] = useState("");
+  const [customKey, setCustomKey] = useState("");
+  const [customValue, setCustomValue] = useState("");
   const readOnlyNode = !draft ? selectedNode : null;
 
   if (!draft && !readOnlyNode) {
@@ -2003,25 +2688,65 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
   const frontMatter = draft.frontMatter || extractFrontMatterShape(draft);
   const type = frontMatter.type || draft.type || "concept";
   const relationships = Array.isArray(frontMatter.relationships) ? frontMatter.relationships : [];
+  const draftRef = normalizeNodeRef(projectionNodeRef(draft));
   const typeDefinition = NODE_TYPES_BY_TYPE[type] || null;
   const allowedSubtypes = typeDefinition?.allowed_subtypes || [];
-  const filteredRelationshipDefinitions = relationshipCategory === "all"
-    ? RELATIONSHIP_TYPE_DEFINITIONS
-    : RELATIONSHIP_TYPE_DEFINITIONS.filter((definition) => definition.category === relationshipCategory);
-  const searchedRelationshipDefinitions = filteredRelationshipDefinitions.filter((definition) => {
-    const query = relationshipQuery.trim().toLowerCase();
-    if (!query) return true;
-    return [definition.label, definition.type, definition.category, definition.meaning, definition.inverse]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(query));
-  });
-  const selectedRelationshipDefinition = RELATIONSHIP_TYPES_BY_TYPE[relationshipType] || null;
   const trailSequence = Array.isArray(frontMatter.nodes) ? frontMatter.nodes : [];
   const selectedSubtypes = uniqueList([
     frontMatter.subtype,
     ...(Array.isArray(frontMatter.subtypes) ? frontMatter.subtypes : [])
   ]);
-  const availableTrailTargets = nodes.filter((node) => projectionNodeRef(node) !== projectionNodeRef(draft));
+  const typeSpecificFields = Array.isArray(typeDefinition?.editable_fields)
+    ? typeDefinition.editable_fields.map((field) => ({
+      ...field,
+      list: field?.value_kind === "string_list" || field?.value_kind === "list"
+    }))
+    : [];
+  const reservedKeys = new Set([
+    ...RESERVED_FRONTMATTER_KEYS,
+    ...typeSpecificFields.map((field) => field.key)
+  ]);
+  const customPropertyEntries = Object.entries(frontMatter)
+    .filter(([key]) => !reservedKeys.has(key))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const sortedExistingNodes = sortNodesForPicker(nodes);
+  const availableTrailTargets = sortedExistingNodes.filter((node) => projectionNodeRef(node) !== projectionNodeRef(draft));
+  const relationshipRows = (() => {
+    const rows = [];
+    for (const node of nodes || []) {
+      const sourceNode = node?.source || node;
+      const sourceRef = normalizeNodeRef(projectionNodeRef(sourceNode));
+      if (!sourceRef) continue;
+      const nodeFrontMatter = sourceNode?.frontMatter || sourceNode?.data || sourceNode || {};
+      const nodeRelationships = Array.isArray(nodeFrontMatter.relationships)
+        ? nodeFrontMatter.relationships
+        : Array.isArray(sourceNode?.relationships)
+          ? sourceNode.relationships
+          : [];
+      for (const [relationshipIndex, relationship] of nodeRelationships.entries()) {
+        const type = relationship?.type || "related_to";
+        const targetRef = normalizeNodeRef(relationship?.target || relationship?.to || relationship?.node || "");
+        const isOutgoing = sourceRef === draftRef;
+        const isIncoming = targetRef && targetRef === draftRef;
+        if (!isOutgoing && !isIncoming) continue;
+        const inverseType = RELATIONSHIP_TYPES_BY_TYPE[type]?.inverse || "";
+        const targetNode = targetRef ? findWorkspaceNode(targetRef, nodes) : null;
+        rows.push({
+          key: `${sourceRef}:${targetRef || "unknown"}:${type}:${relationshipIndex}`,
+          relationship,
+          sourceNode,
+          targetNode,
+          sourceRef,
+          targetRef,
+          relationshipIndex,
+          type,
+          inverseType,
+          editable: isOutgoing
+        });
+      }
+    }
+    return rows;
+  })();
   const localNodePath = resolveNodeFilePath(draft);
   const intakeAnalysis = frontMatter.intake_analysis && typeof frontMatter.intake_analysis === "object"
     ? frontMatter.intake_analysis
@@ -2029,6 +2754,12 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
 
   function updateFrontMatter(key, value) {
     setDraft({ ...draft, frontMatter: { ...frontMatter, [key]: value } });
+  }
+
+  function removeFrontMatterKey(key) {
+    const next = { ...frontMatter };
+    delete next[key];
+    setDraft({ ...draft, frontMatter: next });
   }
 
   function updateSharing(patch) {
@@ -2053,8 +2784,31 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
     const next = current.includes(value)
       ? current.filter((item) => item !== value)
       : [...current, value];
-    updateFrontMatter("subtype", next[0] || undefined);
-    updateFrontMatter("subtypes", next.slice(1));
+    setDraft({
+      ...draft,
+      frontMatter: {
+        ...frontMatter,
+        subtype: next[0] || undefined,
+        subtypes: next.slice(1)
+      }
+    });
+  }
+
+  function updateCustomProperty(key, value) {
+    if (!key) return;
+    if (value === "") {
+      removeFrontMatterKey(key);
+      return;
+    }
+    updateFrontMatter(key, parseLoosePropertyValue(value));
+  }
+
+  function addCustomProperty() {
+    const key = customKey.trim();
+    if (!key) return;
+    updateCustomProperty(key, customValue);
+    setCustomKey("");
+    setCustomValue("");
   }
 
   function updateRelationship(index, patch) {
@@ -2120,9 +2874,11 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
       <div className="panel-row sticky-editor-head">
         <div className="editor-head-copy">
           <div className="panel-title">Node Editor</div>
-          <div className="editor-id">{frontMatter.id || draft.id || draft.relativePath || "new node"}</div>
         </div>
         <div className="panel-actions panel-actions-primary">
+          <button type="button" onClick={duplicateNode}>Duplicate</button>
+          {type === "relationship" && <button type="button" onClick={() => collapseRelationshipNodeToSimple?.(draft)}>Collapse to simple</button>}
+          {localNodePath && <button type="button" className="danger" onClick={deleteNode}>Remove</button>}
           <button className="primary" onClick={saveNode}>Save Node</button>
         </div>
       </div>
@@ -2168,6 +2924,123 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
           emptyLabel="Choose secondary node roles"
           onToggle={(value) => toggleListFrontMatter("facets", value)}
         />
+      </EditorFold>
+
+      <EditorFold
+        title="Properties"
+        helpTitle="Properties"
+        help="Use typed properties when the protocol already expects them, then add custom fields only for details the standard shape does not cover yet."
+        href={canonicalHelpUrl("property", typeSpecificFields[0]?.key || "title")}
+        defaultOpen={typeSpecificFields.length > 0 || customPropertyEntries.length > 0}
+      >
+        {typeSpecificFields.length ? (
+          <>
+            <div className="panel-title">Type-specific fields</div>
+            {typeSpecificFields.map((field) => (
+              <div className="property-field" key={field.key}>
+                <FieldLabel help={field.help} href={canonicalHelpUrl("property", field.key)}>{field.label}</FieldLabel>
+                {field.value_kind === "boolean" ? (
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(frontMatter[field.key])}
+                      onChange={(event) => {
+                        if (!event.target.checked) {
+                          removeFrontMatterKey(field.key);
+                          return;
+                        }
+                        updateFrontMatter(field.key, true);
+                      }}
+                    />
+                    <span>
+                      <strong>{field.label}</strong>
+                      {field.help ? <small>{field.help}</small> : null}
+                    </span>
+                  </label>
+                ) : field.value_kind === "enum" ? (
+                  <select
+                    value={formatPropertyValue(frontMatter[field.key])}
+                    onChange={(event) => {
+                      if (!event.target.value) {
+                        removeFrontMatterKey(field.key);
+                        return;
+                      }
+                      updateFrontMatter(field.key, event.target.value);
+                    }}
+                  >
+                    <option value="">None</option>
+                    {fieldOptionList(field).map((option) => (
+                      <option value={option.value} key={`${field.key}-${option.value}`}>{option.label}</option>
+                    ))}
+                  </select>
+                ) : field.list ? (
+                  <input
+                    value={Array.isArray(frontMatter[field.key]) ? frontMatter[field.key].join(", ") : ""}
+                    onChange={(event) => {
+                      const next = event.target.value.split(",").map((item) => item.trim()).filter(Boolean);
+                      if (!next.length) {
+                        removeFrontMatterKey(field.key);
+                        return;
+                      }
+                      updateFrontMatter(field.key, next);
+                    }}
+                    placeholder="comma, separated, values"
+                  />
+                ) : (
+                  <input
+                    type={field.value_kind === "date" ? "date" : field.value_kind === "url" ? "url" : "text"}
+                    value={formatPropertyValue(frontMatter[field.key])}
+                    onChange={(event) => {
+                      if (!event.target.value.trim()) {
+                        removeFrontMatterKey(field.key);
+                        return;
+                      }
+                      updateFrontMatter(field.key, event.target.value);
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </>
+        ) : (
+          <div className="selector-empty">No protocol-specific fields are surfaced for this node type yet.</div>
+        )}
+
+        <div className="panel-title">Custom fields</div>
+        <p className="field-help">These save directly onto the node so you can carry extra properties now without waiting for Studio to grow a dedicated control.</p>
+        <div className="custom-property-form">
+          <input
+            value={customKey}
+            onChange={(event) => setCustomKey(event.target.value)}
+            placeholder="field_name"
+          />
+          <textarea
+            rows={2}
+            value={customValue}
+            onChange={(event) => setCustomValue(event.target.value)}
+            placeholder="value or JSON"
+          />
+          <button type="button" onClick={addCustomProperty} disabled={!customKey.trim()}>Add field</button>
+        </div>
+        {customPropertyEntries.length ? (
+          <div className="custom-property-list">
+            {customPropertyEntries.map(([key, value]) => (
+              <div className="custom-property-card" key={key}>
+                <div className="custom-property-head">
+                  <strong>{key}</strong>
+                  <button type="button" onClick={() => removeFrontMatterKey(key)}>Remove</button>
+                </div>
+                <textarea
+                  rows={Array.isArray(value) || (value && typeof value === "object") ? 4 : 2}
+                  value={formatPropertyValue(value)}
+                  onChange={(event) => updateCustomProperty(key, event.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="selector-empty">No custom fields yet.</div>
+        )}
       </EditorFold>
 
       <EditorFold
@@ -2273,7 +3146,7 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
           <div className="relationship-form">
             <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
               <option value="">Choose node for trail</option>
-              {availableTrailTargets.map((node) => <option value={projectionNodeRef(node)} key={`trail-${nodeKey(node)}`}>{node.title || node.id}</option>)}
+              {availableTrailTargets.map((node) => <option value={projectionNodeRef(node)} key={`trail-${nodeKey(node)}`}>{formatNodePickerLabel(node)}</option>)}
             </select>
             <button
               type="button"
@@ -2321,97 +3194,64 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
         <div className="panel-row">
           <div className="panel-title">Relationships</div>
         </div>
-        <div className="relationship-catalog">
-          <div className="relationship-filters">
-            <select value={relationshipCategory} onChange={(e) => {
-            const nextCategory = e.target.value;
-            setRelationshipCategory(nextCategory);
-            const nextDefinition = nextCategory === "all"
-              ? RELATIONSHIP_TYPE_DEFINITIONS[0]
-              : RELATIONSHIP_TYPE_DEFINITIONS.find((definition) => definition.category === nextCategory);
-            if (nextDefinition && nextCategory !== "all" && RELATIONSHIP_TYPES_BY_TYPE[relationshipType]?.category !== nextCategory) {
-              setRelationshipType(nextDefinition.type);
-            }
-          }}>
-            <option value="all">All categories</option>
-            {RELATIONSHIP_CATEGORIES.map((category) => <option value={category} key={category}>{category}</option>)}
-          </select>
-            <input value={relationshipQuery} onChange={(e) => setRelationshipQuery(e.target.value)} placeholder="Search relationship meanings" />
-          </div>
-          <div className="relationship-type-list">
-            {searchedRelationshipDefinitions.slice(0, 24).map((definition) => (
-              <button
-                type="button"
-                className={`relationship-type-option ${relationshipType === definition.type ? "selected" : ""}`}
-                key={definition.type}
-                onClick={() => setRelationshipType(definition.type)}
-                title={definition.meaning}
-              >
-                <span>{definition.label}</span>
-                <small>{definition.type}</small>
-              </button>
-            ))}
-          </div>
+        <div className="relationship-actions">
+          <button type="button" disabled={!draft} onClick={() => openRelationshipPicker?.(draft)}>From this node to existing</button>
+          <button type="button" disabled={!draft} onClick={() => openRelationshipNewNodePicker?.(draft)}>From this node to new</button>
         </div>
-        {selectedRelationshipDefinition && (
-          <div className="relationship-definition">
-            <span className="pill">{selectedRelationshipDefinition.category}</span>
-            <span>Inverse: {selectedRelationshipDefinition.inverse || "none"}</span>
-            <p>{selectedRelationshipDefinition.meaning}</p>
-            <div className="relationship-actions">
-              <button type="button" onClick={() => startRelationshipLink(relationshipType)}>Click two graph nodes</button>
-              <a href={canonicalHelpUrl("relationship-type", relationshipType)} target="_blank" rel="noreferrer">Canonical node</a>
-            </div>
-          </div>
-        )}
-        <div className="relationship-form">
-          <select value={relationshipTarget} onChange={(e) => setRelationshipTarget(e.target.value)}>
-            <option value="">Choose target</option>
-            {nodes.map((node) => <option value={projectionNodeRef(node)} key={nodeKey(node)}>{node.title || node.id}</option>)}
-          </select>
-          <button disabled={!relationshipTarget} onClick={() => {
-            addRelationship(relationshipType, relationshipTarget);
-            setRelationshipTarget("");
-          }}>Add</button>
-        </div>
-        {relationships.length ? relationships.map((rel, i) => (
-          <div className="relationship-chip" key={i}>
-            <div className="relationship-chip-main">
-              <select
-                value={rel.type || "related_to"}
-                onChange={(event) => updateRelationship(i, { type: event.target.value })}
-                aria-label="Relationship type"
-              >
-                {RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => (
-                  <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
-                ))}
-              </select>
-              <span>{" -> "} {rel.target || rel.to || "unknown"}</span>
-            </div>
-            <div className="relationship-chip-actions">
-              {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && (
-                <button type="button" onClick={() => updateRelationship(i, { type: RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse })}>
-                  Use inverse
-                </button>
+        {relationshipRows.length ? relationshipRows.map((row) => {
+          const sourceLabel = row.sourceNode?.title || row.sourceNode?.id || row.sourceRef || "unknown source";
+          const targetLabel = row.targetNode?.title || row.targetRef || "unknown target";
+          const targetTypeLabel = relationshipLabel(row.inverseType || row.type);
+          const sourceTypeLabel = relationshipLabel(row.type);
+          return (
+            <div
+              className="relationship-chip"
+              key={row.key}
+              onContextMenu={(event) => {
+                if (!row.editable) return;
+                if (type === "relationship") return;
+                if (!createRelationshipNodeFromRelationship) return;
+                event.preventDefault();
+                event.stopPropagation();
+                createRelationshipNodeFromRelationship(draft, row.relationship);
+              }}
+            >
+              <div className="relationship-chip-main">
+                {row.editable ? (
+                  <select
+                    value={row.type || "related_to"}
+                    onChange={(event) => updateRelationship(row.relationshipIndex, { type: event.target.value })}
+                    aria-label="Relationship type"
+                  >
+                    {RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => (
+                      <option value={definition.type} key={definition.type}>{definition.label} ({definition.type})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span>{sourceTypeLabel}</span>
+                )}
+                <span>{sourceLabel}</span>
+                <span>{" -> "}</span>
+                <span>{targetLabel}</span>
+                <small className="muted">target side: {targetTypeLabel}</small>
+              </div>
+              {row.editable && (
+                <div className="relationship-chip-actions">
+                  {type !== "relationship" && (
+                    <button type="button" onClick={() => createRelationshipNodeFromRelationship?.(draft, row.relationship)}>Make relationship node</button>
+                  )}
+                  <button type="button" className="danger" onClick={() => removeRelationship(row.relationshipIndex)}>Remove</button>
+                </div>
               )}
-              <button type="button" className="danger" onClick={() => removeRelationship(i)}>Remove</button>
             </div>
-            {RELATIONSHIP_TYPES_BY_TYPE[rel.type]?.inverse && <small>Inverse type: {RELATIONSHIP_TYPES_BY_TYPE[rel.type].inverse}</small>}
-          </div>
-        )) : <p className="muted">No relationships yet.</p>}
+          );
+        }) : <p className="muted">No relationships yet.</p>}
       </EditorFold>
 
       <EditorFold title={`Suggestions${suggestions.length ? ` (${suggestions.length})` : ""}`} defaultOpen={false}>
         {suggestions.length ? suggestions.map((suggestion, i) => (
           <button className="suggestion" key={i} onClick={() => suggestion.action?.()}>{suggestion.text}</button>
         )) : <p className="muted">No suggestions right now.</p>}
-      </EditorFold>
-
-      <EditorFold title="Node Actions" defaultOpen={false}>
-        <div className="panel-actions panel-actions-secondary">
-          <button onClick={duplicateNode}>Duplicate</button>
-          {localNodePath && <button className="danger" onClick={deleteNode}>Remove Node</button>}
-        </div>
       </EditorFold>
     </div>
   );
@@ -2428,7 +3268,8 @@ function groupNodes(nodes, mode) {
     if (!groups[key]) groups[key] = [];
     groups[key].push(node);
   }
-  return Object.fromEntries(Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)));
+  const sortedGroups = Object.entries(groups).map(([key, groupNodes]) => [key, sortNodesForPicker(groupNodes)]);
+  return Object.fromEntries(sortedGroups.sort(([a], [b]) => compareGroupKeys(mode, a, b)));
 }
 
 function canonicalHelpUrl(kind, id) {
@@ -2470,17 +3311,36 @@ function buildLocalGraph(nodes, current, maxDepth = 1) {
   }));
   const focusId = projectionNodeRef(current) || projectedNodes[0]?.id || "";
   const relationships = relationshipsFromProjectionNodes(projectedNodes);
-  const neighborhood = buildHopNeighborhood(projectedNodes, relationships, {
+  const relationshipNodeSignatures = new Set();
+  for (const node of projectedNodes) {
+    const sourceNode = node?.source || node;
+    const frontMatter = sourceNode?.frontMatter || sourceNode?.data || sourceNode || {};
+    const relationshipType = frontMatter.relationship_type || frontMatter.relationshipType || sourceNode?.relationship_type || sourceNode?.relationshipType;
+    const sourceRef = normalizeNodeRef(frontMatter.source_node || frontMatter.source_node_id || sourceNode?.source_node || sourceNode?.source_node_id);
+    const targetRef = normalizeNodeRef(frontMatter.target_node || frontMatter.target_node_id || sourceNode?.target_node || sourceNode?.target_node_id);
+    const typeRef = normalizeNodeRef(relationshipType || frontMatter.subtype || frontMatter.type || sourceNode?.subtype || sourceNode?.type);
+    if (sourceRef && targetRef && typeRef && (sourceNode?.type === "relationship" || frontMatter.type === "relationship" || relationshipType)) {
+      relationshipNodeSignatures.add(`${sourceRef}|${typeRef}|${targetRef}`);
+    }
+  }
+
+  const edgeFilter = (edge) => {
+      const sourceRef = normalizeNodeRef(edge?.source?.id || edge?.source?.key || edge?.source);
+      const targetRef = normalizeNodeRef(edge?.target?.id || edge?.target?.key || edge?.target);
+      const typeRef = normalizeNodeRef(edge?.type || "related_to");
+      if (!sourceRef || !targetRef || !typeRef) return true;
+      return !relationshipNodeSignatures.has(`${sourceRef}|${typeRef}|${targetRef}`);
+  };
+
+  const { graph } = buildViewerGraphModel(projectedNodes, relationships, {
     focusId,
-    maxDepth,
-    edgeScore: (edge) => scoreGraphEdge(edge, projectedNodes, focusId)
-  });
-  const graph = layoutReadableProjection(neighborhood, {
-    focusId,
+    exhaustive: true,
     registry: GRAPH_PROJECTION_REGISTRY,
     width: 900,
     height: 620,
     maxDepth,
+    edgeFilter,
+    edgeScore: (edge) => scoreViewerEdge(edge, projectedNodes, focusId),
     labelForEdge: (edge) => humanizeRelationship(edge.type || "related_to")
   });
   return {
@@ -2590,8 +3450,7 @@ const DEFAULT_GRAPH_VIEWPORT = { x: 0, y: 0, scale: 1 };
 
 function fitGraphViewport(nodes) {
   if (!nodes?.length) return DEFAULT_GRAPH_VIEWPORT;
-  const readableNodes = nodes.filter((node) => node.selected || Number(node.distance || 0) <= 1);
-  return fitReadableProjectionViewport(readableNodes.length ? readableNodes : nodes, {
+  return fitReadableProjectionViewport(nodes, {
     padding: 86,
     width: 900,
     height: 620,
@@ -2647,58 +3506,6 @@ function scaleGraphViewport(viewport, factor) {
   };
 }
 
-function describeGraphDensity(graph = {}) {
-  const edgeCount = Array.isArray(graph.edges) ? graph.edges.length : 0;
-  const nodeCount = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
-  const incidentCounts = new Map();
-  for (const edge of graph.edges || []) {
-    incidentCounts.set(edge.source?.id, (incidentCounts.get(edge.source?.id) || 0) + 1);
-    incidentCounts.set(edge.target?.id, (incidentCounts.get(edge.target?.id) || 0) + 1);
-  }
-  const maxIncident = Math.max(0, ...incidentCounts.values(), 0);
-  const dense = edgeCount >= 120 || nodeCount >= 140 || maxIncident >= 70;
-  return {
-    mode: dense ? "dense" : "normal",
-    edgeCount,
-    nodeCount,
-    maxIncident,
-    incidentCounts
-  };
-}
-
-function selectVisibleGraphLabels(graph = {}, options = {}) {
-  const dense = options.dense === true;
-  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
-  if (!dense) {
-    return new Set(nodes.map((node) => node.id || node.key).filter(Boolean));
-  }
-  const incidentCounts = describeGraphDensity(graph).incidentCounts;
-  const ranked = [...nodes]
-    .sort((a, b) => {
-      const aSelected = a.selected ? 1 : 0;
-      const bSelected = b.selected ? 1 : 0;
-      if (aSelected !== bSelected) return bSelected - aSelected;
-      const aDistance = Number(a.distance || 0);
-      const bDistance = Number(b.distance || 0);
-      if (aDistance !== bDistance) return aDistance - bDistance;
-      const aIncident = incidentCounts.get(a.id) || 0;
-      const bIncident = incidentCounts.get(b.id) || 0;
-      if (aIncident !== bIncident) return bIncident - aIncident;
-      return Number(b.importance || 0) - Number(a.importance || 0);
-    });
-  const visible = new Set();
-  for (const node of ranked) {
-    if (node.selected) visible.add(node.id || node.key);
-  }
-  for (const node of ranked) {
-    const id = node.id || node.key;
-    if (!id) continue;
-    if (Number(node.distance || 0) <= 1 && visible.size < 24) visible.add(id);
-    if (visible.size >= 24) break;
-  }
-  return visible;
-}
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -2715,58 +3522,6 @@ function nodeGradientId(node) {
 
 function humanizeRelationship(value) {
   return String(value || "related_to").replace(/_/g, " ");
-}
-
-function scoreGraphEdge(edge, nodes, focusId) {
-  const source = nodes.find((node) => node.id === edge.source);
-  const target = nodes.find((node) => node.id === edge.target);
-  const sourceImportance = Number(source?.importance || 3);
-  const targetImportance = Number(target?.importance || 3);
-  const weight = Number(edge.weight || 1);
-  const relationshipPriority = {
-    defines: 10,
-    created: 9,
-    created_by: 9,
-    participated_in: 8,
-    originated_by: 9,
-    coined: 9,
-    represented_by: 9,
-    used_as_primary_media_for: 9,
-    depicts: 9,
-    authored: 8,
-    features: 8,
-    featured_in: 8,
-    presented: 8,
-    presented_by: 8,
-    proposed: 7,
-    demonstrates: 7,
-    demonstrated_by: 7,
-    explains: 7,
-    explained_by: 7,
-    context_for: 6,
-    documents: 6,
-    extends: 6,
-    supports: 6,
-    supported_by: 6,
-    contrasts: 6,
-    depends_on: 6,
-    exposes: 6,
-    anticipates: 6,
-    contains: 6,
-    includes: 6,
-    uses: 5,
-    used_by: 5,
-    cites: 5,
-    related_to: 4,
-    related: 3,
-    mentions: 1,
-    unresolved_media: 1
-  };
-  const typePriority = relationshipPriority[edge.type] || 3;
-  const directBonus = edge.source === focusId || edge.target === focusId ? 20 : 0;
-  const explicitBonus = edge.origin === "relationship" ? 8 : 0;
-  const visibilityBonus = edge.visibility === "primary" ? 5 : edge.visibility === "secondary" ? 2 : 0;
-  return directBonus + explicitBonus + visibilityBonus + weight * 10 + typePriority + sourceImportance + targetImportance;
 }
 
 function trimLabel(value, max) {
@@ -2833,7 +3588,9 @@ function normalizeFrontMatterForSave(frontMatter = {}) {
     "fullPath",
     "data",
     "raw",
-    "source_file"
+    "source_file",
+    "__pendingRelationshipSource",
+    "__pendingRelationshipType"
   ]) {
     delete next[field];
   }
@@ -2922,6 +3679,41 @@ function normalizeNodeRef(value) {
 function isPreviewHelperNodeId(value) {
   const normalized = normalizeNodeRef(value);
   return /^layer\d+/.test(normalized) || normalized.endsWith("-selectbox") || normalized.startsWith("cy-");
+}
+
+function compareGroupKeys(mode, keyA, keyB) {
+  if (mode === "type") {
+    const rankA = NODE_TYPE_ORDER.get(keyA);
+    const rankB = NODE_TYPE_ORDER.get(keyB);
+    if (rankA !== undefined || rankB !== undefined) {
+      if (rankA === undefined) return 1;
+      if (rankB === undefined) return -1;
+      return rankA - rankB;
+    }
+  }
+  return String(keyA || "").localeCompare(String(keyB || ""));
+}
+
+function sortNodesForPicker(nodes = []) {
+  return [...nodes].sort(compareNodesForPicker);
+}
+
+function compareNodesForPicker(nodeA, nodeB) {
+  const typeA = String(NODE_TYPES_BY_TYPE[nodeA?.type]?.label || nodeA?.type || "node");
+  const typeB = String(NODE_TYPES_BY_TYPE[nodeB?.type]?.label || nodeB?.type || "node");
+  const typeCompare = typeA.localeCompare(typeB);
+  if (typeCompare) return typeCompare;
+  const titleA = String(nodeA?.title || nodeA?.id || "");
+  const titleB = String(nodeB?.title || nodeB?.id || "");
+  const titleCompare = titleA.localeCompare(titleB);
+  if (titleCompare) return titleCompare;
+  return String(nodeKey(nodeA)).localeCompare(String(nodeKey(nodeB)));
+}
+
+function formatNodePickerLabel(node) {
+  const title = node?.title || node?.id || "Untitled";
+  const typeLabel = NODE_TYPES_BY_TYPE[node?.type]?.label || node?.type || "node";
+  return `${title} — ${typeLabel}`;
 }
 
 function nodeKey(node) {
