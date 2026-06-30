@@ -49,6 +49,9 @@ let augmentService = {
 
 app.setName("XanaNode Studio");
 if (process.platform === "win32") app.setAppUserModelId("com.xananode.studio");
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 
 function rendererUrl() {
   if (process.env.VITE_DEV_SERVER_URL) return process.env.VITE_DEV_SERVER_URL;
@@ -1803,6 +1806,10 @@ function writeHugoIndexJson(outputDir, substrate) {
         summary: node.summary || "",
         html: markdownToPreviewHtml(node.body || ""),
         content: stripMarkdown(node.body || "").slice(0, 1200),
+        nodes: [].concat(node.nodes || node.trail_nodes || []).filter(Boolean).map((value) => protocolToLocal.get(String(value)) || localIdFromProtocolId(String(value)) || String(value)),
+        trail_nodes: [].concat(node.nodes || node.trail_nodes || []).filter(Boolean).map((value) => protocolToLocal.get(String(value)) || localIdFromProtocolId(String(value)) || String(value)),
+        branches: Array.isArray(node.branches) ? node.branches : (Array.isArray(node.trail_branches) ? node.trail_branches : []),
+        trail_branches: Array.isArray(node.branches) ? node.branches : (Array.isArray(node.trail_branches) ? node.trail_branches : []),
         image: node.image || "",
         image_alt: node.image_alt || node.title || id,
         primary_media: node.primary_media ? (protocolToLocal.get(node.primary_media) || localIdFromProtocolId(node.primary_media) || node.primary_media) : "",
@@ -2086,7 +2093,7 @@ function syncWorkspaceProjectionFiles(workspaceDir, projectionRoot) {
     dedupeProjectionMarkdownNodes(targetContent);
   }
   const workspaceAssets = path.join(workspaceDir, "assets");
-  const targetAssets = path.join(projectionRoot, "assets");
+  const targetAssets = path.join(projectionRoot, "static", "assets");
   fs.rmSync(targetAssets, { recursive: true, force: true });
   if (fs.existsSync(workspaceAssets)) {
     fs.cpSync(workspaceAssets, targetAssets, { recursive: true, force: true });

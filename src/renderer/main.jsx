@@ -4,19 +4,31 @@ import nodeTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protoco
 import relationshipTypeRegistry from "../../vendor/xananode-core/vendor/xananode-protocol/schemas/xananode-relationship-types.v0.5.0.json";
 import xananodeIconUrl from "../../vendor/xananode-core/vendor/xananode-protocol/media/images/xananode-icon.svg";
 import {
+  advanceViewerPlaybackState,
+  applyViewerTrailBranchChoice,
+  buildViewerPathStory,
+  buildViewerSearchState,
+  createViewerTourSession,
   buildReadableTravelOverlayMarkup,
   buildViewerTravelPlan,
   buildViewerGraphModel,
   createProjectionRegistry,
   describeViewerGraphDensity,
+  DEFAULT_VIEWER_TOUR_SETTINGS,
+  findViewerConnectivePaths,
   fitReadableProjectionViewport,
+  getViewerTrailNodeIds,
+  getViewerTimedDwellMs,
+  normalizeViewerTourSettings,
+  rememberViewerTourVisit,
   projectionEdgeArrowPoints,
   projectionEdgePath,
+  resolveViewerNodeSelection,
   relationshipsFromProjectionNodes,
   scoreViewerEdge,
   selectViewerLabeledNodes,
   wrapProjectionText
-} from "../../vendor/xananode-core/src/index.js";
+} from "../../vendor/xananode-core/src/browser.js";
 import buildMetadata from "../generated/build-metadata.json";
 import "./styles/app.css";
 
@@ -39,6 +51,8 @@ const RELATIONSHIP_TYPE_DEFINITIONS = [...relationshipTypeRegistry.relationship_
 });
 const RELATIONSHIP_TYPES_BY_TYPE = Object.fromEntries(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => [definition.type, definition]));
 const RELATIONSHIP_CATEGORIES = [...new Set(RELATIONSHIP_TYPE_DEFINITIONS.map((definition) => definition.category))].sort();
+const PATH_MAX_HOPS = 24;
+const TOUR_SETTINGS_STORAGE_KEY = "xananode.studio.tourSettings";
 const GRAPH_PROJECTION_REGISTRY = createProjectionRegistry({
   nodeTypes: nodeTypeRegistry.node_types,
   relationshipTypes: relationshipTypeRegistry.relationship_types
@@ -95,6 +109,53 @@ const RESERVED_FRONTMATTER_KEYS = new Set([
   "pack_mode",
   "intake_analysis"
 ]);
+function loadTourSettings() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(TOUR_SETTINGS_STORAGE_KEY) || "null");
+    return normalizeViewerTourSettings(parsed || DEFAULT_VIEWER_TOUR_SETTINGS);
+  } catch {
+    return normalizeViewerTourSettings(DEFAULT_VIEWER_TOUR_SETTINGS);
+  }
+}
+
+function saveTourSettings(value) {
+  try {
+    window.localStorage.setItem(TOUR_SETTINGS_STORAGE_KEY, JSON.stringify(normalizeViewerTourSettings(value || DEFAULT_VIEWER_TOUR_SETTINGS)));
+  } catch {}
+}
+
+function canNarrateInStudio() {
+  return typeof window !== "undefined" && "speechSynthesis" in window && Boolean(window.SpeechSynthesisUtterance);
+}
+
+function studioVoices() {
+  return canNarrateInStudio() ? window.speechSynthesis.getVoices() : [];
+}
+
+function studioPreferredVoice(voices = []) {
+  return voices.find((voice) => /google/i.test(voice.name) && /uk|united kingdom|gb|en-gb/i.test(`${voice.name} ${voice.lang}`) && /male/i.test(voice.name))
+    || voices.find((voice) => /google/i.test(voice.name) && /en-gb/i.test(voice.lang || ""))
+    || voices.find((voice) => /en-gb/i.test(voice.lang || ""))
+    || voices.find((voice) => voice.default)
+    || voices[0]
+    || null;
+}
+
+function studioTourNarration(node, settings = {}) {
+  if (!node) return "";
+  const frontMatter = node.frontMatter || node.data || node || {};
+  const parts = [];
+  if (frontMatter.title || node.title) parts.push(frontMatter.title || node.title);
+  if (settings.detail !== "title-only" && (frontMatter.summary || node.summary)) parts.push(frontMatter.summary || node.summary);
+  if (settings.detail === "title-summary-content") {
+    const body = String(node.body || frontMatter.content || node.content || "")
+      .replace(/[#*_`>-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (body) parts.push(body);
+  }
+  return parts.join(". ").trim();
+}
 
 function App() {
   const [workspace, setWorkspace] = useState(null);
@@ -117,8 +178,6 @@ function App() {
   const [catalogMode, setCatalogMode] = useState("type");
   const [appMetadata, setAppMetadata] = useState(buildMetadata);
   const [buildSuggestionMode, setBuildSuggestionMode] = useState("review");
-  const [projectionLayout, setProjectionLayout] = useState("single");
-  const [projectionSplit, setProjectionSplit] = useState(55);
   const [relationshipPicker, setRelationshipPicker] = useState(null);
   const [relationshipNewNodePicker, setRelationshipNewNodePicker] = useState(null);
   const [graphCommand, setGraphCommand] = useState(null);
@@ -1204,9 +1263,6 @@ function App() {
               <div className="panel-title">Workspace</div>
               <div className="small muted">{workspace.rootDir}</div>
               <div className="manifest-name">{workspace.manifest?.name || workspace.manifest?.id || "Unnamed substrate"}</div>
-              <div className="workspace-credit">
-                Created by <a href="https://xananode.com/person/christian-siefen/" target="_blank" rel="noreferrer">Christian Siefen</a> for the <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode</a> project. Follow development on <a href="https://github.com/kingc95" target="_blank" rel="noreferrer">kingc95</a>.
-              </div>
               {isCanonicalWorkspace(workspace) && (
                 <div className="canon-warning">
                   You are viewing canonical XanaNode material. Explore freely; edits here become your own proposal until they are accepted back into the canon.
@@ -1228,7 +1284,6 @@ function App() {
                   Intertwingled substrates stay mounted into this workspace until you snapshot, merge, or remove them. They should not replace your local nodes.
                 </div>
               )}
-              <ProjectCreditLinks />
             </section>
 
             <section className="panel-card">
@@ -1270,22 +1325,9 @@ function App() {
             <ProjectionToolbar
               centerMode={centerMode}
               setCenterMode={setCenterMode}
-              projectionLayout={projectionLayout}
-              setProjectionLayout={setProjectionLayout}
-              projectionSplit={projectionSplit}
-              setProjectionSplit={setProjectionSplit}
             />
-            {projectionLayout === "split" && centerMode !== "health" && centerMode !== "logs" ? (
-              <div className="projection-split" style={{ gridTemplateColumns: `${projectionSplit}% minmax(280px, 1fr)` }}>
-                <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} onQuickRelationshipToExisting={openRelationshipPicker} onQuickRelationshipToNew={openRelationshipNewNodePicker} onPromoteRelationshipEdge={createRelationshipNodeFromRelationship} onCollapseRelationshipNode={collapseRelationshipNodeToSimple} command={graphCommand} />
-                <LogView logs={previewLogs} compact />
-              </div>
-            ) : (
-              <>
-                {centerMode === "graph" && <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} onQuickRelationshipToExisting={openRelationshipPicker} onQuickRelationshipToNew={openRelationshipNewNodePicker} onPromoteRelationshipEdge={createRelationshipNodeFromRelationship} onCollapseRelationshipNode={collapseRelationshipNodeToSimple} command={graphCommand} />}
-              </>
-            )}
-                {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} onOpenNode={openMountedNode} onDuplicateNode={duplicateMountedNode} />}
+            {centerMode === "graph" && <GraphView workspaceRoot={workspace?.rootDir} nodes={nodes} selectedNode={selectedNode} draft={draft} onSelect={handleGraphNodeClick} onQuickRelationshipToExisting={openRelationshipPicker} onQuickRelationshipToNew={openRelationshipNewNodePicker} onPromoteRelationshipEdge={createRelationshipNodeFromRelationship} onCollapseRelationshipNode={collapseRelationshipNodeToSimple} onOpenHealth={() => setCenterMode("health")} onOpenLogs={() => setCenterMode("logs")} command={graphCommand} />}
+            {centerMode === "health" && <HealthView status={status} refreshStatus={refreshStatus} onRemoveImport={removeMountedImport} onToggleMountedNode={toggleMountedNode} onOpenNode={openMountedNode} onDuplicateNode={duplicateMountedNode} />}
             {centerMode === "logs" && <LogView logs={previewLogs} />}
           </section>
 
@@ -1316,19 +1358,6 @@ function isWikipediaFileUrlValue(value) {
   return /wikipedia\.org\/wiki\/File:/i.test(String(value || ""));
 }
 
-function ProjectCreditLinks() {
-  return (
-    <div className="credit-links">
-      <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a>
-      <a href="https://github.com/kingc95/XanaNode-Protocol" target="_blank" rel="noreferrer">Protocol</a>
-      <a href="https://github.com/kingc95/XanaNode-Core-SDK" target="_blank" rel="noreferrer">Core SDK</a>
-      <a href="https://github.com/kingc95/XanaNode-Workspace" target="_blank" rel="noreferrer">Workspace</a>
-      <a href="https://github.com/kingc95/XanaNode-Hugo" target="_blank" rel="noreferrer">Hugo</a>
-      <a href="https://github.com/kingc95/XanaNode-Studio" target="_blank" rel="noreferrer">Studio</a>
-    </div>
-  );
-}
-
 function Welcome({ onOpen, onOpenRecent, onCreate, onTrial, recentWorkspaces = [], onClearRecent }) {
   return (
     <main className="welcome">
@@ -1341,8 +1370,6 @@ function Welcome({ onOpen, onOpenRecent, onCreate, onTrial, recentWorkspaces = [
           <button onClick={onTrial}>Try Demo Workspace</button>
           <button onClick={onOpen}>Open Existing</button>
         </div>
-        <p className="welcome-credit">Created by <a href="https://xananode.com/person/christian-siefen/" target="_blank" rel="noreferrer">Christian Siefen</a>. Trace the project at <a href="https://xananode.com/" target="_blank" rel="noreferrer">XanaNode.com</a> and follow development on <a href="https://github.com/kingc95" target="_blank" rel="noreferrer">kingc95</a>.</p>
-        <ProjectCreditLinks />
       </div>
       <div className="welcome-card recent-card">
         <div className="panel-row">
@@ -1397,7 +1424,7 @@ function WorkspaceSetup({ onCreate, onTrial, onClose }) {
             <div className="kicker">New Workspace</div>
             <h2>Create a local substrate</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">x</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">?</button>
         </div>
         <label>Substrate name</label>
         <input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
@@ -1757,6 +1784,12 @@ function NodeTypeIcon({ type, size = 28, variant = "badge" }) {
           <path d="M28 50h8" stroke={accent} strokeWidth="4" strokeLinecap="round" />
         </>
       )}
+      {kind === "organism" && (
+        <>
+          <path d="M32 48c-7-4-11-11-11-19 0-8 5-13 11-15 6 2 11 7 11 15 0 8-4 15-11 19z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M32 18v24M32 30c-4-2-7-5-9-9M32 26c4-2 7-5 9-9" fill="none" stroke={accent} strokeWidth="4" strokeLinecap="round" />
+        </>
+      )}
       {kind === "source" || kind === "publication" || kind === "essay" || kind === "fragment" || kind === "revision" || kind === "schema" || kind === "item" ? (
         <>
           <path d="M22 14h16l10 10v26H22z" fill="none" stroke={accent} strokeWidth="4" strokeLinejoin="round" />
@@ -1780,7 +1813,7 @@ function NodeTypeIcon({ type, size = 28, variant = "badge" }) {
           {kind === "knowledge_gap" && <path d="M26 31h12M32 24v14" stroke={accent} strokeWidth="4" strokeLinecap="round" />}
         </>
       )}
-      {!(kind === "person" || kind === "organization" || kind === "place" || kind === "concept" || kind === "source" || kind === "publication" || kind === "essay" || kind === "fragment" || kind === "revision" || kind === "schema" || kind === "item" || kind === "question" || kind === "claim" || kind === "response" || kind === "community" || kind === "media" || kind === "project" || kind === "trail" || kind === "technology" || kind === "knowledge_gap" || kind === "observation" || kind === "problem") && (
+      {!(kind === "person" || kind === "organization" || kind === "place" || kind === "concept" || kind === "organism" || kind === "source" || kind === "publication" || kind === "essay" || kind === "fragment" || kind === "revision" || kind === "schema" || kind === "item" || kind === "question" || kind === "claim" || kind === "response" || kind === "community" || kind === "media" || kind === "project" || kind === "trail" || kind === "technology" || kind === "knowledge_gap" || kind === "observation" || kind === "problem") && (
         <>
           <circle cx="24" cy="24" r="4" fill={accent} />
           <circle cx="40" cy="24" r="4" fill={accent} />
@@ -1981,47 +2014,53 @@ function AugmentIntakeDialog({ intake, onSetStatus, onApplySession, onClose }) {
 
 function ProjectionToolbar({
   centerMode,
-  setCenterMode,
-  projectionLayout,
-  setProjectionLayout,
-  projectionSplit,
-  setProjectionSplit
+  setCenterMode
 }) {
+  if (centerMode === "graph") return null;
+  const title = centerMode === "health" ? "Workspace health" : "Preview logs";
   return (
     <div className="center-tabs projection-toolbar">
       <div className="tab-group">
-        <button className={centerMode === "graph" && projectionLayout !== "split" ? "active" : ""} onClick={() => {
-          setProjectionLayout("single");
-          setCenterMode("graph");
-        }}>Graph Projection</button>
-        <button className={projectionLayout === "split" ? "active" : ""} onClick={() => {
-          setProjectionLayout("split");
-          setCenterMode("graph");
-        }}>Both</button>
-        <button className={centerMode === "health" ? "active" : ""} onClick={() => {
-          setProjectionLayout("single");
-          setCenterMode("health");
-        }}>Health</button>
-        <button className={centerMode === "logs" ? "active" : ""} onClick={() => {
-          setProjectionLayout("single");
-          setCenterMode("logs");
-        }}>Logs</button>
+        <button className="active" onClick={() => setCenterMode("graph")}>{"\u2190"} Back to graph</button>
+        <span className="projection-toolbar-title">{title}</span>
       </div>
-      {projectionLayout === "split" && (
-        <label className="split-control">
-          <span>Graph size</span>
-          <input type="range" min="35" max="75" value={projectionSplit} onChange={(event) => setProjectionSplit(Number(event.target.value))} />
-        </label>
-      )}
     </div>
   );
 }
 
-function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuickRelationshipToExisting, onQuickRelationshipToNew, onPromoteRelationshipEdge, onCollapseRelationshipNode, command }) {
+function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuickRelationshipToExisting, onQuickRelationshipToNew, onPromoteRelationshipEdge, onCollapseRelationshipNode, onOpenHealth, onOpenLogs, command }) {
   const current = draft || selectedNode || nodes[0] || null;
   const [graphDepth, setGraphDepth] = useState(1);
   const [contextMenu, setContextMenu] = useState(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [tourActive, setTourActive] = useState(false);
+  const [tourIndex, setTourIndex] = useState(0);
+  const [tourVisited, setTourVisited] = useState([]);
+  const [tourRecent, setTourRecent] = useState([]);
+  const [tourSettingsOpen, setTourSettingsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [tourSettings, setTourSettings] = useState(() => loadTourSettings());
+  const [availableVoices, setAvailableVoices] = useState(() => studioVoices());
+  const [activeTrail, setActiveTrail] = useState(null);
+  const [trailBranchPrompt, setTrailBranchPrompt] = useState(null);
+  const [pathState, setPathState] = useState({
+    active: false,
+    sourceQuery: "",
+    targetQuery: "",
+    allowReverse: true,
+    maxDepth: 6,
+    maxPaths: 6,
+    results: [],
+    summary: ""
+  });
   const graphNodes = useMemo(() => buildEffectiveGraphNodes(nodes, draft, selectedNode), [nodes, draft, selectedNode]);
+  const projectedNodes = useMemo(() => graphNodes.map((node) => ({
+    ...node,
+    id: projectionNodeRef(node),
+    source: node
+  })), [graphNodes]);
+  const graphRelationships = useMemo(() => relationshipsFromProjectionNodes(projectedNodes), [projectedNodes]);
+  const selectedRef = projectionNodeRef(current);
   const graph = useMemo(() => buildLocalGraph(graphNodes, current, graphDepth), [graphNodes, current, graphDepth]);
   const graphDensity = useMemo(() => describeViewerGraphDensity(graph), [graph]);
   const denseGraph = graphDensity.mode === "dense";
@@ -2032,6 +2071,20 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
   const [panning, setPanning] = useState(false);
   const panRef = useRef(null);
   const previousGraphRef = useRef({ currentId: projectionNodeRef(current), graph, viewport });
+  const previousTourFocusRef = useRef("");
+  const tourUtteranceRef = useRef(null);
+  const tourCycleRef = useRef(0);
+  const projectedNodeMap = useMemo(() => new Map(projectedNodes.map((node) => [node.id, node])), [projectedNodes]);
+  const searchState = useMemo(() => buildViewerSearchState(graphNodes, searchInput, { limit: 10 }), [graphNodes, searchInput]);
+  const searchResults = searchState.results || [];
+  const currentTrailNode = useMemo(() => ({
+    id: selectedRef,
+    type: current?.type,
+    nodes: current?.frontMatter?.nodes,
+    trail_nodes: current?.frontMatter?.trail_nodes,
+    branches: current?.frontMatter?.branches,
+    trail_branches: current?.frontMatter?.trail_branches
+  }), [selectedRef, current?.type, current?.frontMatter?.nodes, current?.frontMatter?.trail_nodes, current?.frontMatter?.branches, current?.frontMatter?.trail_branches]);
   const caption = graph.hasVisibleEdges
     ? `${graph.nodes.length} visible nodes connected to ${current?.title || current?.id || "selected node"}${denseGraph ? ` · dense view (${graphDensity.maxIncident} direct/incident connections at peak)` : ""}`
     : current
@@ -2041,6 +2094,47 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
   useEffect(() => {
     setViewport(fitGraphViewport(graph.nodes));
   }, [graphKey, current?.id, current?.title, graphDepth]);
+
+  useEffect(() => {
+    const refreshVoices = () => {
+      const voices = studioVoices();
+      setAvailableVoices(voices);
+      if (!tourSettings.voice && voices.length) {
+        const preferred = studioPreferredVoice(voices);
+        if (preferred?.voiceURI) {
+          setTourSettings((value) => {
+            const next = { ...value, voice: preferred.voiceURI };
+            saveTourSettings(next);
+            return next;
+          });
+        }
+      }
+    };
+    refreshVoices();
+    if (!canNarrateInStudio()) return undefined;
+    window.speechSynthesis.onvoiceschanged = refreshVoices;
+    return () => {
+      if (window.speechSynthesis.onvoiceschanged === refreshVoices) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    saveTourSettings(tourSettings);
+  }, [tourSettings]);
+
+  useEffect(() => {
+    if (!tourActive || !selectedRef) return;
+    const visit = rememberViewerTourVisit(selectedRef, {
+      tourVisited,
+      tourRecent,
+      visibleCount: graph.nodes.length,
+      normalizeId: normalizeNodeRef
+    });
+    setTourVisited((currentVisited) => arraysEqual(currentVisited, visit.tourVisited) ? currentVisited : visit.tourVisited);
+    setTourRecent((currentRecent) => arraysEqual(currentRecent, visit.tourRecent) ? currentRecent : visit.tourRecent);
+  }, [tourActive, selectedRef, graph.nodes.length, tourVisited, tourRecent]);
 
   useEffect(() => {
     const previous = previousGraphRef.current;
@@ -2068,6 +2162,90 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
   useEffect(() => {
     previousGraphRef.current = { currentId: projectionNodeRef(current), graph, viewport };
   }, [viewport.x, viewport.y, viewport.scale]);
+
+  useEffect(() => {
+    if (!tourActive || !selectedRef || !graph.nodes.length) return undefined;
+    const cycleId = ++tourCycleRef.current;
+    let advanced = false;
+    let timer = null;
+    const cleanupNarration = () => {
+      if (tourUtteranceRef.current && canNarrateInStudio()) {
+        tourUtteranceRef.current.onend = null;
+        tourUtteranceRef.current.onerror = null;
+        window.speechSynthesis.cancel();
+      }
+      tourUtteranceRef.current = null;
+    };
+    const playbackStep = advanceViewerPlaybackState({
+      tourActive,
+      activeTrail,
+      nodes: graph.nodes,
+      focusId: selectedRef,
+      previousFocusId: previousTourFocusRef.current,
+      tourRecent,
+      tourVisited,
+      tourIndex,
+      normalizeId: normalizeNodeRef
+    });
+    if (playbackStep.kind === "stop-tour") {
+      setTourActive(false);
+      setActiveTrail(null);
+      setTrailBranchPrompt(null);
+      setTourIndex(0);
+      previousTourFocusRef.current = "";
+      return undefined;
+    }
+    if (playbackStep.kind === "stop-trail") {
+      setActiveTrail(null);
+      setTrailBranchPrompt(null);
+      return undefined;
+    }
+    if (playbackStep.kind === "branch") {
+      setActiveTrail(playbackStep.activeTrail || null);
+      setTrailBranchPrompt(playbackStep.branch || null);
+      return undefined;
+    }
+    setTrailBranchPrompt(null);
+    const nextId = playbackStep.nextId;
+    if (!nextId) return undefined;
+    const advance = () => {
+      if (advanced || tourCycleRef.current !== cycleId) return;
+      advanced = true;
+      previousTourFocusRef.current = selectedRef;
+      setTourIndex(playbackStep.nextIndex);
+      setActiveTrail(playbackStep.activeTrail || null);
+      const nextProjectedNode = projectedNodeMap.get(nextId);
+      if (nextProjectedNode?.source) onSelect?.(nextProjectedNode.source);
+    };
+    if (tourSettings.mode === "narration" && canNarrateInStudio()) {
+      cleanupNarration();
+      const text = studioTourNarration(current, tourSettings);
+      if (text) {
+        const utterance = new window.SpeechSynthesisUtterance(text);
+        const selectedVoice = availableVoices.find((voice) => voice.voiceURI === tourSettings.voice) || studioPreferredVoice(availableVoices);
+        if (selectedVoice) utterance.voice = selectedVoice;
+        utterance.rate = Math.max(0.65, Math.min(1.55, Number(tourSettings.rate) || 1));
+        utterance.pitch = Math.max(0.75, Math.min(1.35, Number(tourSettings.pitch) || 1));
+        utterance.volume = 0.9;
+        utterance.onend = advance;
+        utterance.onerror = advance;
+        tourUtteranceRef.current = utterance;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+        return () => {
+          advanced = true;
+          cleanupNarration();
+        };
+      }
+    }
+    const timedDelayMs = getViewerTimedDwellMs(tourSettings);
+    timer = window.setTimeout(advance, timedDelayMs);
+    return () => {
+      advanced = true;
+      if (timer) window.clearTimeout(timer);
+      cleanupNarration();
+    };
+  }, [tourActive, tourSettings, availableVoices, current, selectedRef, graphKey, tourRecent, tourVisited, tourIndex, projectedNodeMap, onSelect, graph.nodes, activeTrail]);
 
   useEffect(() => {
     if (!command?.command) return;
@@ -2137,6 +2315,151 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
     setContextMenu(null);
   }
 
+  function clearSearch() {
+    setSearchInput("");
+  }
+
+  function selectSearchNode(node) {
+    if (!node) return;
+    const resolved = resolveViewerNodeSelection(
+      node.id || node.protocol_id || node.protocolId || node.title || "",
+      graphNodes.map((entry) => ({ ...entry, id: projectionNodeRef(entry) }))
+    ) || node;
+    clearSearch();
+    onSelect?.(resolved.source || resolved);
+  }
+
+  function toggleTour() {
+    if (tourActive) {
+      if (canNarrateInStudio()) window.speechSynthesis.cancel();
+      tourCycleRef.current += 1;
+      setTourActive(false);
+      setActiveTrail(null);
+      setTrailBranchPrompt(null);
+      setTourIndex(0);
+      setTourVisited([]);
+      setTourRecent([]);
+      previousTourFocusRef.current = "";
+      return;
+    }
+    const focusId = projectionNodeRef(current);
+    const session = createViewerTourSession({
+      focusId,
+      trailNode: currentTrailNode,
+      trailOptions: {
+        allEdges: graph.edges.map((edge) => ({
+          source: edge.source?.id,
+          target: edge.target?.id,
+          type: edge.type
+        })),
+        normalizeId: normalizeNodeRef
+      },
+      normalizeId: normalizeNodeRef
+    });
+    setTourActive(true);
+    setActiveTrail(session.activeTrail || null);
+    setTrailBranchPrompt(null);
+    setTourIndex(session.tourIndex);
+    setTourVisited(session.tourVisited);
+    setTourRecent(session.tourRecent);
+    previousTourFocusRef.current = session.previousFocusId || "";
+  }
+
+  function updateTourSetting(key, value) {
+    setTourSettings((currentValue) => ({ ...currentValue, [key]: value }));
+  }
+
+  function jumpToTrailNode(targetId, options = {}) {
+    if (!targetId || !activeTrail) return;
+    const nextIndex = activeTrail.nodes.indexOf(targetId);
+    if (nextIndex < 0) return;
+    setActiveTrail((currentValue) => currentValue ? ({
+      ...currentValue,
+      index: nextIndex + 1
+    }) : currentValue);
+    if (options.playback === true) setTourActive(true);
+    if (options.playback === false) setTourActive(false);
+    const nextProjectedNode = projectedNodeMap.get(targetId);
+    if (nextProjectedNode?.source) onSelect?.(nextProjectedNode.source);
+  }
+
+  function chooseTrailBranch(choice) {
+    if (!trailBranchPrompt || !activeTrail || !choice?.nodes?.length) return;
+    const branchedTrail = applyViewerTrailBranchChoice(activeTrail, trailBranchPrompt.after, choice, {
+      normalizeId: normalizeNodeRef
+    });
+    setActiveTrail(branchedTrail);
+    setTrailBranchPrompt(null);
+    const firstBranchId = choice.nodes[0];
+    const firstProjectedNode = projectedNodeMap.get(firstBranchId);
+    if (firstProjectedNode?.source) onSelect?.(firstProjectedNode.source);
+  }
+
+  function closeTrailPlayback() {
+    if (canNarrateInStudio()) window.speechSynthesis.cancel();
+    tourCycleRef.current += 1;
+    setTourActive(false);
+    setActiveTrail(null);
+    setTrailBranchPrompt(null);
+    setTourIndex(0);
+    setTourVisited([]);
+    setTourRecent([]);
+    previousTourFocusRef.current = "";
+  }
+
+  function openPathExplorer() {
+    setToolsOpen(false);
+    setTourSettingsOpen(false);
+    setPathState((value) => ({
+      ...value,
+      active: true,
+      sourceQuery: value.sourceQuery || selectedRef || "",
+      results: [],
+      summary: ""
+    }));
+  }
+
+  function closePathExplorer() {
+    setPathState((value) => ({
+      ...value,
+      active: false,
+      results: [],
+      summary: ""
+    }));
+  }
+
+  function runPathExplorer(event) {
+    event?.preventDefault?.();
+    const sourceNode = resolveViewerNodeSelection(pathState.sourceQuery, projectedNodes);
+    const targetNode = resolveViewerNodeSelection(pathState.targetQuery, projectedNodes);
+
+    if (!sourceNode || !targetNode) {
+      setPathState((value) => ({ ...value, results: [], summary: "Choose valid source and target nodes." }));
+      return;
+    }
+    if (sourceNode.id === targetNode.id) {
+      setPathState((value) => ({ ...value, results: [], summary: "Source and target are the same node." }));
+      return;
+    }
+
+    const results = findViewerConnectivePaths(graphRelationships, sourceNode.id, targetNode.id, {
+      allowReverse: pathState.allowReverse,
+      maxDepth: pathState.maxDepth,
+      maxPaths: pathState.maxPaths
+    });
+
+    let summary = "";
+    if (!results.length) {
+      summary = `No connective path found within ${pathState.maxDepth} hops.`;
+    } else if (results.length >= pathState.maxPaths) {
+      summary = `Showing the top ${pathState.maxPaths} scored paths within ${pathState.maxDepth} hops.`;
+    } else {
+      summary = `${results.length} connective path${results.length === 1 ? "" : "s"} found within ${pathState.maxDepth} hops.`;
+    }
+
+    setPathState((value) => ({ ...value, results, summary }));
+  }
+
   if (!graphNodes.length) {
     return (
       <div className="empty-panel">
@@ -2148,11 +2471,57 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
 
   return (
     <div className={`graph-wrap ${panning ? "panning" : ""}`}>
+      <div className="graph-search-shell" aria-label="Search graph nodes">
+        <input
+          type="text"
+          className="graph-search-input"
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") clearSearch();
+            if (event.key === "Enter" && searchResults[0]?.node) {
+              event.preventDefault();
+              selectSearchNode(searchResults[0].node);
+            }
+          }}
+          placeholder="trace an idea across sources"
+        />
+        {searchInput ? (
+          <button type="button" className="graph-search-clear" aria-label="Clear search" onClick={clearSearch}>{"\u00D7"}</button>
+        ) : null}
+        {searchState.ready || searchState.pending ? (
+          <div className="graph-search-results">
+            <div className="graph-search-meta">{searchState.meta}</div>
+            {!searchState.error && searchResults.length ? (
+              <ol>
+                {searchResults.map((result) => (
+                  <li key={`search-${projectionNodeRef(result.node)}`}>
+                    <button type="button" className="graph-search-result" onClick={() => selectSearchNode(result.node)}>
+                      <span className="graph-search-result-title">{result.node.title || result.node.id}</span>
+                      <span className="graph-search-result-meta">{humanizeNodeType(result.node.type || "node")} · score {Math.round(result.score)}</span>
+                      {result.snippet ? <span className="graph-search-result-snippet">{result.snippet}</span> : null}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       <div className="graph-tools" aria-label="Graph projection controls">
-        <button type="button" onClick={() => setViewport(fitGraphViewport(graph.nodes))}>Fit</button>
-        <button type="button" aria-label="Zoom out" onClick={() => setViewport((value) => scaleGraphViewport(value, 0.84))}>-</button>
-        <button type="button" onClick={() => setViewport(DEFAULT_GRAPH_VIEWPORT)}>Reset</button>
-        <button type="button" aria-label="Zoom in" onClick={() => setViewport((value) => scaleGraphViewport(value, 1.18))}>+</button>
+        <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => setViewport((value) => scaleGraphViewport(value, 0.84))}>-</button>
+        <button type="button" aria-label="Fit graph" title="Fit graph" onClick={() => setViewport(fitGraphViewport(graph.nodes))}>{"\u25A1"}</button>
+        <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => setViewport((value) => scaleGraphViewport(value, 1.18))}>+</button>
+        <button type="button" aria-label="Open connective path explorer" title="Compare connective path" onClick={openPathExplorer}>{"\u2934"}</button>
+        <button type="button" aria-label={tourActive ? "Stop guided tour" : "Start guided tour"} title={tourActive ? "Stop guided tour" : "Start guided tour"} className={tourActive ? "active" : ""} onClick={toggleTour}>{tourActive ? "\u23F8" : "\u25B6"}</button>
+        <button type="button" aria-label="Tour and narration settings" title="Tour and narration settings" className={tourSettingsOpen ? "active" : ""} onClick={() => {
+          setToolsOpen(false);
+          setTourSettingsOpen((value) => !value);
+        }}>{"\u2699"}</button>
+        <button type="button" aria-label="Workspace tools" title="Workspace tools" className={toolsOpen ? "active" : ""} onClick={() => {
+          setTourSettingsOpen(false);
+          setToolsOpen((value) => !value);
+        }}>{"\u22EF"}</button>
       </div>
       <div className="graph-depth-tools" aria-label="Graph hop depth">
         {[1, 2, 3, 4].map((depth) => (
@@ -2166,12 +2535,179 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
           </button>
         ))}
       </div>
-      <div className="graph-pan-tools" aria-label="Pan graph">
-        <button type="button" aria-label="Pan up" onClick={() => panBy(0, 58)}>^</button>
-        <button type="button" aria-label="Pan left" onClick={() => panBy(58, 0)}>{"<"}</button>
-        <button type="button" aria-label="Pan right" onClick={() => panBy(-58, 0)}>{">"}</button>
-        <button type="button" aria-label="Pan down" onClick={() => panBy(0, -58)}>v</button>
-      </div>
+      {tourSettingsOpen ? (
+        <div className="graph-tour-settings">
+          <div className="graph-tour-settings-card">
+            <div className="graph-tour-settings-head">
+              <strong>Tour settings</strong>
+              <button type="button" onClick={() => setTourSettingsOpen(false)}>Close</button>
+            </div>
+            <label>
+              <span>Mode</span>
+              <select value={tourSettings.mode} onChange={(event) => updateTourSetting("mode", event.target.value)}>
+                <option value="narration">Narration</option>
+                <option value="timed">Timed</option>
+              </select>
+            </label>
+            <label>
+              <span>Timed dwell {Number(tourSettings.timedSeconds || 9).toFixed(0)}s</span>
+              <input
+                type="range"
+                min="3"
+                max="120"
+                step="1"
+                value={tourSettings.timedSeconds || 9}
+                onChange={(event) => updateTourSetting("timedSeconds", Number(event.target.value))}
+              />
+            </label>
+            <label>
+              <span>Read</span>
+              <select value={tourSettings.detail} onChange={(event) => updateTourSetting("detail", event.target.value)}>
+                <option value="title-only">Title only</option>
+                <option value="title-summary">Title and summary</option>
+                <option value="title-summary-content">Title, summary, and content</option>
+              </select>
+            </label>
+            <label>
+              <span>Voice</span>
+              <select value={tourSettings.voice} onChange={(event) => updateTourSetting("voice", event.target.value)} disabled={!availableVoices.length}>
+                {!availableVoices.length ? <option value="">No browser voices found</option> : null}
+                {availableVoices.map((voice) => (
+                  <option value={voice.voiceURI} key={voice.voiceURI}>{`${voice.name}${voice.lang ? ` (${voice.lang})` : ""}`}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Speed {Number(tourSettings.rate || 1).toFixed(2)}</span>
+              <input type="range" min="0.7" max="1.5" step="0.05" value={tourSettings.rate} onChange={(event) => updateTourSetting("rate", Number(event.target.value))} />
+            </label>
+            <label>
+              <span>Pitch {Number(tourSettings.pitch || 1).toFixed(2)}</span>
+              <input type="range" min="0.75" max="1.35" step="0.05" value={tourSettings.pitch} onChange={(event) => updateTourSetting("pitch", Number(event.target.value))} />
+            </label>
+          </div>
+        </div>
+      ) : null}
+      {toolsOpen ? (
+        <div className="graph-tools-popover">
+          <div className="graph-tools-popover-card">
+            <div className="graph-tools-popover-head">
+              <strong>Tools</strong>
+              <button type="button" onClick={() => setToolsOpen(false)}>Close</button>
+            </div>
+            <button className="wide" type="button" onClick={() => {
+              setToolsOpen(false);
+              onOpenHealth?.();
+            }}>Workspace health</button>
+            <button className="wide" type="button" onClick={() => {
+              setToolsOpen(false);
+              onOpenLogs?.();
+            }}>Preview logs</button>
+          </div>
+        </div>
+      ) : null}
+      {activeTrail?.nodes?.length ? (
+        <TrailPlayer
+          activeTrail={activeTrail}
+          focusId={selectedRef}
+          projectedNodeMap={projectedNodeMap}
+          playbackActive={tourActive}
+          branchPrompt={trailBranchPrompt}
+          onJump={jumpToTrailNode}
+          onTogglePlayback={() => setTourActive((value) => !value)}
+          onClose={closeTrailPlayback}
+          onChooseBranch={chooseTrailBranch}
+        />
+      ) : null}
+      {pathState.active ? (
+        <div className="graph-path-overlay">
+          <div className="graph-path-card">
+            <div className="graph-path-header">
+              <div>
+                <h3>Connective Path Explorer</h3>
+                <p>Trace relationship paths between two nodes and read the route as a short semantic story.</p>
+              </div>
+              <button type="button" onClick={closePathExplorer}>Back to graph</button>
+            </div>
+            <form className="graph-path-form" onSubmit={runPathExplorer}>
+              <datalist id="studio-path-node-list">
+                {projectedNodes.map((node) => (
+                  <option key={`path-option-${node.id}`} value={node.id} label={node.title || node.id} />
+                ))}
+              </datalist>
+              <label>
+                <span>From</span>
+                <input list="studio-path-node-list" value={pathState.sourceQuery} onChange={(event) => setPathState((value) => ({ ...value, sourceQuery: event.target.value }))} placeholder="Node id or title" />
+                <button type="button" className="graph-path-mini" onClick={() => setPathState((value) => ({ ...value, sourceQuery: selectedRef || value.sourceQuery || "" }))}>Use focus</button>
+              </label>
+              <label>
+                <span>To</span>
+                <input list="studio-path-node-list" value={pathState.targetQuery} onChange={(event) => setPathState((value) => ({ ...value, targetQuery: event.target.value }))} placeholder="Node id or title" />
+                <button type="button" className="graph-path-mini" onClick={() => setPathState((value) => ({ ...value, targetQuery: selectedRef || value.targetQuery || "" }))}>Use focus</button>
+              </label>
+              <div className="graph-path-actions">
+                <label className="graph-path-inline">
+                  <span>Hop limit</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={PATH_MAX_HOPS}
+                    step="1"
+                    value={pathState.maxDepth}
+                    onChange={(event) => setPathState((value) => ({
+                      ...value,
+                      maxDepth: Math.min(PATH_MAX_HOPS, Math.max(1, Number(event.target.value) || 6))
+                    }))}
+                  />
+                </label>
+                <label className="graph-path-toggle">
+                  <input type="checkbox" checked={pathState.allowReverse} onChange={(event) => setPathState((value) => ({ ...value, allowReverse: event.target.checked }))} />
+                  <span>Trace both directions</span>
+                </label>
+                <button type="button" onClick={() => setPathState((value) => ({ ...value, sourceQuery: value.targetQuery, targetQuery: value.sourceQuery }))}>Swap</button>
+                <button type="submit" className="primary">Trace paths</button>
+              </div>
+            </form>
+            <div className="graph-path-results">
+              {pathState.results.length ? <p className="graph-path-summary-line">{pathState.summary}</p> : null}
+              {!pathState.results.length ? (
+                <p className="muted">{pathState.summary || "Pick a source and target node, then trace the connective path."}</p>
+              ) : (
+                <ol className="graph-path-list">
+                  {pathState.results.map((path, index) => {
+                    const story = buildViewerPathStory(path, projectedNodeMap);
+                    return (
+                      <li key={`path-${index}`} className="graph-path-result-card">
+                        <div className="graph-path-result-header">
+                          <strong>Path {index + 1}</strong>
+                          <span>{path.hops.length} hop{path.hops.length === 1 ? "" : "s"}</span>
+                        </div>
+                        <p className="graph-path-story">{story}</p>
+                        <ol className="graph-path-hop-list">
+                          {path.hops.map((hop, hopIndex) => {
+                            const fromNode = projectedNodeMap.get(hop.fromId);
+                            const toNode = projectedNodeMap.get(hop.toId);
+                            return (
+                              <li key={`path-hop-${index}-${hopIndex}`} className="graph-path-hop">
+                                <span className="graph-path-hop-index">{hopIndex + 1}</span>
+                                <button type="button" className="graph-path-node-chip" onClick={() => fromNode?.source && onSelect?.(fromNode.source)}>{fromNode?.title || hop.fromId}</button>
+                                <span className="graph-path-hop-arrow">{hop.reversed ? "<-" : "->"}</span>
+                                <span className="graph-path-hop-rel">{humanizeRelationship(hop.edge?.type || "related_to")}</span>
+                                <span className="graph-path-hop-arrow">{hop.reversed ? "<-" : "->"}</span>
+                                <button type="button" className="graph-path-node-chip" onClick={() => toNode?.source && onSelect?.(toNode.source)}>{toNode?.title || hop.toId}</button>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {contextMenu && (
         <div
           className="graph-node-menu"
@@ -2179,7 +2715,7 @@ function GraphView({ workspaceRoot, nodes, selectedNode, draft, onSelect, onQuic
         >
           <div className="graph-node-menu-title">
             {contextMenu.kind === "edge"
-              ? `${contextMenu.sourceNode?.title || contextMenu.sourceNode?.id || "Source"} → ${contextMenu.targetNode?.title || contextMenu.targetNode?.id || "Target"}`
+              ? `${contextMenu.sourceNode?.title || contextMenu.sourceNode?.id || "Source"} -> ${contextMenu.targetNode?.title || contextMenu.targetNode?.id || "Target"}`
               : contextMenu.node?.title || contextMenu.node?.id || "Selected node"}
           </div>
           {contextMenu.kind === "node" && (
@@ -2433,6 +2969,103 @@ function PreviewView({ previewUrl, startPreview, rebuildPreview, stopPreview, lo
         <div className="panel-title">Preview Logs</div>
         <pre className="preview-log-stream">{logs.length ? logs.join("") : "Waiting for preview activity..."}</pre>
       </div>}
+    </div>
+  );
+}
+
+function TrailPlayer({
+  activeTrail,
+  focusId,
+  projectedNodeMap,
+  playbackActive,
+  branchPrompt,
+  onJump,
+  onTogglePlayback,
+  onClose,
+  onChooseBranch
+}) {
+  if (!activeTrail?.nodes?.length) return null;
+  const trailNode = activeTrail.trailId ? projectedNodeMap.get(activeTrail.trailId) : null;
+  const currentIndex = Math.max(0, activeTrail.nodes.indexOf(focusId));
+  const branchCount = Array.isArray(activeTrail.branches) ? activeTrail.branches.length : 0;
+  const currentLabel = `${currentIndex + 1} of ${activeTrail.nodes.length}${branchCount ? ` · ${branchCount} branch${branchCount === 1 ? "" : "es"}` : ""}`;
+
+  return (
+    <div className="graph-trail-player" aria-live="polite">
+      <div className="graph-trail-player-head">
+        <div className="graph-trail-player-title">
+          <span>Trail player</span>
+          <strong>{trailNode?.title || "Active trail"}</strong>
+          <em>{currentLabel}</em>
+        </div>
+        <div className="graph-trail-player-actions">
+          <button
+            type="button"
+            disabled={currentIndex <= 0}
+            onClick={() => {
+              const previousId = activeTrail.nodes[currentIndex - 1];
+              if (previousId) onJump?.(previousId, { playback: false });
+            }}
+          >
+            {"\u2190"}
+          </button>
+          <button type="button" onClick={onTogglePlayback}>
+            {playbackActive ? "Pause" : "Resume"}
+          </button>
+          <button
+            type="button"
+            disabled={currentIndex >= activeTrail.nodes.length - 1}
+            onClick={() => {
+              const nextId = activeTrail.nodes[currentIndex + 1];
+              if (nextId) onJump?.(nextId, { playback: false });
+            }}
+          >
+            {"\u2192"}
+          </button>
+          <button type="button" aria-label="Close trail player" onClick={onClose}>
+            {"\u2715"}
+          </button>
+        </div>
+      </div>
+      {branchPrompt?.choices?.length ? (
+        <div className="graph-trail-branch-card">
+          <div className="graph-trail-branch-head">
+            <strong>Choose the next branch</strong>
+            <span>{branchPrompt.label || "This trail splits here."}</span>
+          </div>
+          <div className="graph-trail-branch-choices">
+            {branchPrompt.choices.map((choice, index) => (
+              <button
+                type="button"
+                key={`${choice.label || "branch"}-${index}`}
+                className="graph-trail-branch-choice"
+                onClick={() => onChooseBranch?.(choice)}
+              >
+                <strong>{choice.label || `Branch ${index + 1}`}</strong>
+                {choice.description ? <span>{choice.description}</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div className="graph-trail-player-items">
+        {activeTrail.nodes.map((id, index) => {
+          const node = projectedNodeMap.get(id);
+          const isCurrent = id === focusId;
+          return (
+            <button
+              type="button"
+              key={id}
+              className={`graph-trail-player-item ${isCurrent ? "is-current" : ""}`.trim()}
+              onClick={() => onJump?.(id, { playback: false })}
+            >
+              <span>{index + 1}</span>
+              <strong>{node?.title || id}</strong>
+              <em>{humanizeNodeType(node?.type || "node")}</em>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2691,7 +3324,14 @@ function EditorPanel({ selectedNode, draft, setDraft, nodes, suggestions, addRel
   const draftRef = normalizeNodeRef(projectionNodeRef(draft));
   const typeDefinition = NODE_TYPES_BY_TYPE[type] || null;
   const allowedSubtypes = typeDefinition?.allowed_subtypes || [];
-  const trailSequence = Array.isArray(frontMatter.nodes) ? frontMatter.nodes : [];
+  const trailSequence = getViewerTrailNodeIds(
+    {
+      id: draftRef,
+      nodes: frontMatter.nodes,
+      trail_nodes: frontMatter.trail_nodes
+    },
+    { normalizeId: normalizeNodeRef }
+  );
   const selectedSubtypes = uniqueList([
     frontMatter.subtype,
     ...(Array.isArray(frontMatter.subtypes) ? frontMatter.subtypes : [])
@@ -3524,6 +4164,13 @@ function humanizeRelationship(value) {
   return String(value || "related_to").replace(/_/g, " ");
 }
 
+function humanizeNodeType(value) {
+  return String(value || "node")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function trimLabel(value, max) {
   const text = String(value || "Untitled");
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
@@ -3531,6 +4178,13 @@ function trimLabel(value, max) {
 
 function uniqueList(values = []) {
   return values.filter((value, index, list) => value && list.indexOf(value) === index);
+}
+
+function arraysEqual(left = [], right = []) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }
 
 function projectionNodeRef(node) {
@@ -3564,12 +4218,21 @@ function extractFrontMatterShape(node) {
   }
   if (node?.protocolId && !result.protocol_id) result.protocol_id = node.protocolId;
   if (node?.protocol_id && !result.protocol_id) result.protocol_id = node.protocol_id;
+  if (!result.asset_path && result.asset) result.asset_path = result.asset;
+  if (!result.file && result.asset_path) result.file = result.asset_path;
+  if (result.type === "trail") {
+    if (!Array.isArray(result.nodes) && Array.isArray(result.trail_nodes)) result.nodes = [...result.trail_nodes];
+    if (!Array.isArray(result.branches) && Array.isArray(result.trail_branches)) result.branches = [...result.trail_branches];
+  }
   if (!result.relationships) result.relationships = [];
   return result;
 }
 
 function normalizeFrontMatterForSave(frontMatter = {}) {
   const next = { ...frontMatter };
+  if (!next.asset_path && next.asset) next.asset_path = next.asset;
+  if (next.asset_path && !next.file) next.file = next.asset_path;
+  delete next.asset;
   const normalizedSubtypes = uniqueList([
     next.subtype,
     ...(Array.isArray(next.subtypes) ? next.subtypes : [])
@@ -3595,7 +4258,17 @@ function normalizeFrontMatterForSave(frontMatter = {}) {
     delete next[field];
   }
   if (next.type === "trail") {
-    const sequence = Array.isArray(next.nodes) ? next.nodes.filter(Boolean) : [];
+    const sequence = Array.isArray(next.nodes)
+      ? next.nodes.filter(Boolean)
+      : (Array.isArray(next.trail_nodes) ? next.trail_nodes.filter(Boolean) : []);
+    const branches = Array.isArray(next.branches)
+      ? next.branches
+      : (Array.isArray(next.trail_branches) ? next.trail_branches : []);
+    next.nodes = sequence;
+    if (branches.length) next.branches = branches;
+    else delete next.branches;
+    delete next.trail_nodes;
+    delete next.trail_branches;
     const otherRelationships = Array.isArray(next.relationships)
       ? next.relationships.filter((relationship) => !["starts_with", "continues_to"].includes(relationship?.type))
       : [];
@@ -3605,13 +4278,6 @@ function normalizeFrontMatterForSave(frontMatter = {}) {
         type: "starts_with",
         target: sequence[0],
         summary: "This trail begins here."
-      });
-    }
-    for (let index = 1; index < sequence.length; index += 1) {
-      trailRelationships.push({
-        type: "continues_to",
-        target: sequence[index],
-        summary: "This trail continues to the next node."
       });
     }
     next.relationships = [...otherRelationships, ...trailRelationships];
@@ -3713,7 +4379,7 @@ function compareNodesForPicker(nodeA, nodeB) {
 function formatNodePickerLabel(node) {
   const title = node?.title || node?.id || "Untitled";
   const typeLabel = NODE_TYPES_BY_TYPE[node?.type]?.label || node?.type || "node";
-  return `${title} — ${typeLabel}`;
+  return `${title} - ${typeLabel}`;
 }
 
 function nodeKey(node) {
@@ -3892,3 +4558,4 @@ function resolveNodeFilePath(node) {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
+
